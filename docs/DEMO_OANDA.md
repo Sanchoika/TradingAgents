@@ -10,7 +10,8 @@ the first trade. Judge it only after about 150 closed trades.
 
 ## What it does each run
 
-For each instrument in the config (default: NAS100_USD analysed as QQQ, SPX500_USD as SPY):
+For each instrument in the config (the example file: NAS100_USD analysed as QQQ, XAU_USD as GLD,
+BCO_USD as BNO; built-in default without a config: NAS100_USD and SPX500_USD):
 
 1. Runs the full TradingAgents analysis for today and reads the final rating.
 2. Maps it to a target: Buy/Overweight = long, Hold = flat, Underweight/Sell = short.
@@ -61,19 +62,28 @@ python -m tradingagents.demo --config demo.toml run             # real analysis 
 **Cost:** one TradingAgents run is roughly 20 to 40 LLM calls. With a cheap model
 (the example uses DeepSeek Flash) expect a few cents up to about $0.50 per
 instrument per run; check your provider's usage page after the first dry run to get
-the real number. Two instruments on every trading day is about 42 runs a month.
+the real number. Three instruments run once a week is about 13 runs a month.
 
-## Run it every weekday
+## Why weekly
 
-Windows Task Scheduler, weekdays at 16:00 (Georgia time; 07:00 New York in winter, before
+TradingAgents rates a 5-trading-day holding period, and a simulation of these rules on
+2019-2026 prices (scripts in the project files, `tradingagents/sim-2026-11-01/`) found
+weekly runs beat daily ones whenever the ratings had any skill: fewer trades, less
+spread and financing, and a fifth of the LLM bill. With weekly runs, a trade stopped
+out mid-week stays flat until the next run. The same simulation showed no setting
+turns random ratings into a profit; settings only change how much a real edge is worth.
+
+## Run it once a week
+
+Windows Task Scheduler, Mondays at 16:00 (Georgia time; 07:00 New York in winter, before
 the US open):
 
 ```powershell
-schtasks /Create /TN TradingAgentsDemo /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 16:00 ^
+schtasks /Create /TN TradingAgentsDemo /SC WEEKLY /D MON /ST 16:00 ^
   /TR "cmd /c cd /d C:\bbt\TradingAgents && .venv\Scripts\python -m tradingagents.demo --config demo.toml run >> demo.log 2>&1"
 ```
 
-Or on a Linux server with cron: `0 12 * * 1-5 cd ~/TradingAgents && .venv/bin/python -m tradingagents.demo --config demo.toml run >> demo.log 2>&1` (UTC).
+Or on a Linux server with cron: `0 12 * * 1 cd ~/TradingAgents && .venv/bin/python -m tradingagents.demo --config demo.toml run >> demo.log 2>&1` (UTC).
 
 ## Reading the results
 

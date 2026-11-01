@@ -5,10 +5,12 @@ risk_pct = 0.5          # % of account lost if a stop is hit
 atr_mult = 2.0          # stop distance = 2 x daily ATR(14)
 max_drawdown_pct = 10.0 # stop opening new trades after a 10% fall from the starting balance
 
-# OANDA instrument = ticker TradingAgents analyses (an ETF tracking the index).
+# OANDA instrument = ticker TradingAgents analyses (an ETF that tracks it).
+# Each one costs one TradingAgents run per scheduled run.
 [instruments]
-NAS100_USD = "QQQ"
-SPX500_USD = "SPY"
+NAS100_USD = "QQQ"   # Nasdaq 100
+XAU_USD = "GLD"      # gold
+BCO_USD = "BNO"      # Brent crude (widest spread of the three relative to its daily range)
 
 # Cheap models for the agents. Any provider TradingAgents supports works;
 # put that provider's key in .env yourself (never in this file).

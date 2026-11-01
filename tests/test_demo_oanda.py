@@ -245,7 +245,7 @@ def test_example_config_loads():
     from pathlib import Path
 
     cfg = load_config(Path(__file__).resolve().parents[1] / "demo.example.toml")
-    assert cfg.instruments["NAS100_USD"] == "QQQ" and cfg.llm["llm_provider"] == "deepseek"
+    assert cfg.instruments["XAU_USD"] == "GLD" and cfg.llm["llm_provider"] == "deepseek"
 
 
 def test_report_baseline_and_ci():
