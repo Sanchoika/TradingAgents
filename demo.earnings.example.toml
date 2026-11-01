@@ -1,0 +1,27 @@
+# Earnings drift: every weekday, rate only the stocks below that reported earnings
+# since the last run, trade the rating at the next open, exit after hold_days.
+# Copy to demo.toml. Run it every weekday before the US open.
+
+broker = "paper"
+mode = "earnings"
+hold_days = 5
+max_analyses_per_run = 5   # free-tier friendly; extra reporters are logged as skipped
+risk_pct = 0.5
+atr_mult = 2.0
+paper_spread_bps = 5
+
+# 50 large, liquid US stocks across sectors (edit freely).
+universe = [
+  "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "ORCL", "AMD",
+  "NFLX", "CRM", "ADBE", "INTC", "QCOM", "CSCO", "IBM", "UBER", "SHOP", "PLTR",
+  "JPM", "BAC", "GS", "MS", "V", "MA", "PYPL", "AXP", "BLK", "C",
+  "UNH", "LLY", "JNJ", "PFE", "MRK", "ABBV", "TMO", "XOM", "CVX", "COP",
+  "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "KO", "PEP", "DIS", "BA",
+]
+
+[llm]
+llm_provider = "google"
+quick_think_llm = "gemini-3.1-flash-lite"
+deep_think_llm = "gemini-3.5-flash-lite"
+max_debate_rounds = 1
+max_risk_discuss_rounds = 1
