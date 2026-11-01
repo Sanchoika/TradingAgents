@@ -1,17 +1,30 @@
-# Running TradingAgents on an OANDA demo account
+# Forward-testing TradingAgents for free
 
-`python -m tradingagents.demo` turns TradingAgents' daily rating into small,
-stop-protected trades on an **OANDA practice account**, logs every decision, and
-scores the results after costs against a coin-flip baseline. It only talks to
-`api-fxpractice.oanda.com`; there is no setting that points it at a live account.
+`python -m tradingagents.demo` turns TradingAgents' ratings into small, stop-protected
+paper trades, logs every decision, and scores the results after costs against a
+coin-flip baseline. Two accounts are supported:
 
-This is a forward test, not proof of an edge. The rules below are fixed before
-the first trade. Judge it only after about 150 closed trades.
+- **paper** (default, free, no signup): a built-in paper account on Yahoo's daily
+  prices. Works for any Yahoo symbol: US stocks, ETFs, crypto (BTC-USD), forex
+  (EURUSD=X). Orders fill at the **next day's open** plus spread, so a rating never
+  trades on a price it already saw. Stops are checked on each day's high/low.
+- **oanda**: an OANDA **practice** account (`api-fxpractice.oanda.com` only; there is
+  no setting for a live account).
 
-## What it does each run
+Two modes:
 
-For each instrument in the config (the example file: NAS100_USD analysed as QQQ, XAU_USD as GLD,
-BCO_USD as BNO; built-in default without a config: NAS100_USD and SPX500_USD):
+- **watchlist**: rate every instrument on each run (weekly is best, see below).
+- **earnings**: every weekday, rate only the stocks in `universe` that reported
+  earnings since the last run, trade at the next open, exit after `hold_days`
+  (default 5). This is where TradingAgents' news and fundamentals reading has the
+  most to work with. Example: `demo.earnings.example.toml`.
+
+This is a forward test, not proof of an edge. Fix the rules before the first trade
+and judge only after about 150 closed trades.
+
+## What a watchlist run does
+
+For each instrument in the config:
 
 1. Runs the full TradingAgents analysis for today and reads the final rating.
 2. Maps it to a target: Buy/Overweight = long, Hold = flat, Underweight/Sell = short.
@@ -22,8 +35,8 @@ BCO_USD as BNO; built-in default without a config: NAS100_USD and SPX500_USD):
 5. If the account falls 10% below its starting balance, no new trades are opened
    (closes still happen).
 
-Only trades tagged `tradingagents` are touched; anything you open by hand is left alone.
-Everything is written to `~/.tradingagents/demo/journal.jsonl`.
+On OANDA only trades tagged `tradingagents` are touched. Everything is written to
+`~/.tradingagents/demo/journal.jsonl`; the paper account lives in `paper_account.json` beside it.
 
 ## Setup (Windows PC, in C:\bbt\TradingAgents)
 
@@ -34,15 +47,22 @@ pip install -e .
 copy demo.example.toml demo.toml
 ```
 
-Open `.env` in Notepad and add these lines yourself (never paste keys into a chat):
+For the free setup, get a free key at Google AI Studio (aistudio.google.com) and add it
+to `.env` yourself in Notepad (never paste keys into a chat):
 
 ```
-OANDA_API_KEY=...        # practice account token from OANDA's demo hub
+GOOGLE_API_KEY=...
+# only if you use broker = "oanda":
+OANDA_API_KEY=...        # practice account token
 OANDA_ACCOUNT_ID=...     # e.g. 101-004-1234567-001
-DEEPSEEK_API_KEY=...     # or the key for whichever provider demo.toml names
 ```
 
-## Free checks first (no LLM cost, no real decisions)
+The free Gemini tier limits requests per minute and per day (see AI Studio's rate-limit
+page); one full analysis is roughly 20-40 requests, so expect a handful of analyses a
+day. `max_analyses_per_run` keeps earnings mode inside that. Fully offline alternative:
+Ollama with a local model (`llm_provider = "ollama"`), if your PC can run one.
+
+## Checks first (no LLM calls)
 
 ```powershell
 python -m tradingagents.demo --config demo.toml check
@@ -50,19 +70,18 @@ python -m tradingagents.demo --config demo.toml run --fixed-rating Buy --dry-run
 ```
 
 `check` shows the balance, prices, spreads and ATR, and whether the LLM key is set.
+The paper account's first `run` creates it with 100,000 USD.
 The dry run goes through the whole order path with a fixed rating and sends nothing.
 
-## First real run (paid LLM calls)
+## First real run
 
 ```powershell
 python -m tradingagents.demo --config demo.toml run --dry-run   # real analysis, no orders
 python -m tradingagents.demo --config demo.toml run             # real analysis + demo orders
 ```
 
-**Cost:** one TradingAgents run is roughly 20 to 40 LLM calls. With a cheap model
-(the example uses DeepSeek Flash) expect a few cents up to about $0.50 per
-instrument per run; check your provider's usage page after the first dry run to get
-the real number. Three instruments run once a week is about 13 runs a month.
+**Cost:** free with the Gemini free tier or Ollama. With a paid provider, one run is
+roughly 20 to 40 LLM calls, a few cents to about $0.50 with a cheap model.
 
 ## Why weekly
 
@@ -73,8 +92,9 @@ spread and financing, and a fifth of the LLM bill. With weekly runs, a trade sto
 out mid-week stays flat until the next run. The same simulation showed no setting
 turns random ratings into a profit; settings only change how much a real edge is worth.
 
-## Run it once a week
+## Schedule it
 
+Watchlist mode once a week, earnings mode every weekday (use `/D MON,TUE,WED,THU,FRI`).
 Windows Task Scheduler, Mondays at 16:00 (Georgia time; 07:00 New York in winter, before
 the US open):
 
@@ -96,5 +116,6 @@ confidence interval for P&L per trade, and `p_random_as_good`: how often the sam
 trades with coin-flip directions did at least as well. An edge needs the confidence
 interval above zero **and** a small `p_random_as_good` after ~150 trades.
 
-Known limits: LLM output varies run to run; the agents' data comes from Yahoo for the
-ETF, not OANDA's CFD; the baseline's spread cost is estimated from the entry fill.
+Known limits: LLM output varies run to run; Yahoo's free data can be late or missing;
+the paper account charges no financing or borrow fees and counts P&L in each symbol's
+own currency; on OANDA the agents read the tracking ETF, not the CFD.

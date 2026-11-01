@@ -244,8 +244,12 @@ def test_config_rejects_unknown_keys_and_big_risk(tmp_path):
 def test_example_config_loads():
     from pathlib import Path
 
-    cfg = load_config(Path(__file__).resolve().parents[1] / "demo.example.toml")
-    assert cfg.instruments["XAU_USD"] == "GLD" and cfg.llm["llm_provider"] == "deepseek"
+    root = Path(__file__).resolve().parents[1]
+    cfg = load_config(root / "demo.example.toml")
+    assert cfg.broker == "paper" and cfg.instruments["BTC-USD"] == "BTC-USD"
+    assert cfg.llm["llm_provider"] == "google"
+    earn = load_config(root / "demo.earnings.example.toml")
+    assert earn.mode == "earnings" and len(earn.universe) == 50
 
 
 def test_report_baseline_and_ci():
