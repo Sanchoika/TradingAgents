@@ -26,6 +26,11 @@ class DemoConfig:
     universe: list[str] = field(default_factory=list)
     hold_days: int = 5
     max_analyses_per_run: int = 5   # keeps free-tier LLM limits in reach
+    retry_days: int = 2             # retry a failed or skipped reporter for this many trading days
+    # Optional: folder (e.g. inside an Obsidian vault) that gets a Markdown note per run.
+    notes_dir: str = ""
+    # Optional: shell command run after each real run; the run summary arrives on its stdin.
+    notify_command: str = ""
     # traded symbol -> ticker TradingAgents analyses; a plain list means the same symbol for both.
     instruments: dict[str, str] | list[str] = field(default_factory=dict)
     risk_pct: float = 0.5           # % of NAV lost if the stop is hit

@@ -162,25 +162,33 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
                 reported.append(ticker)
         except Exception as exc:
             rows.append(journal.write("error", instrument=ticker, error=f"earnings lookup: {exc}"))
-    todo = [t for t in reported if t not in held]
-    skipped = todo[cfg.max_analyses_per_run:]
+    # Stocks that failed or were over the limit last time get another chance first,
+    # for up to cfg.retry_days trading days after they reported.
+    retry = {t: d for t, d in state.get("retry", {}).items()
+             if np.busday_count(d, trade_date) <= cfg.retry_days}
+    first_seen = {**{t: trade_date for t in reported}, **retry}
+    todo = [t for t in dict.fromkeys([*retry, *reported]) if t not in held]
+    now_list, skipped = todo[:cfg.max_analyses_per_run], todo[cfg.max_analyses_per_run:]
     rows.append(journal.write("earnings_scan", since=since.isoformat(), reported=reported,
-                              analysing=todo[:cfg.max_analyses_per_run], skipped_over_limit=skipped))
-    if not dry_run:
-        state["last_earnings_scan"] = now_ts.isoformat()
-        journal.save_state(state)
+                              retrying=list(retry), analysing=now_list, skipped_over_limit=skipped))
 
-    for ticker in todo[:cfg.max_analyses_per_run]:
+    failed = []
+    for ticker in now_list:
         try:
             rating, decision = analyze(ticker, trade_date)
             target = plan.target_direction(rating)
             steps = ["open"] if target and not halted else (["halted"] if target else ["skip"])
             rows.append(journal.write("decision", instrument=ticker, ticker=ticker, trade_date=trade_date,
                                       rating=rating, target=target, current=0, actions=steps,
-                                      decision=decision[:2000]))
+                                      decision=decision[:4000]))
             if steps == ["open"]:
                 rows.append(_open(broker, cfg, journal, ticker, rating, target, nav, dry_run))
         except Exception as exc:
+            failed.append(ticker)
             rows.append(journal.write("error", instrument=ticker, ticker=ticker,
                                       error=f"{type(exc).__name__}: {exc}"))
+    if not dry_run:
+        state["last_earnings_scan"] = now_ts.isoformat()
+        state["retry"] = {t: first_seen[t] for t in [*failed, *skipped]}
+        journal.save_state(state)
     return rows
