@@ -64,9 +64,19 @@ def _check_llm_key(cfg) -> None:
 def cmd_run(args, cfg) -> int:
     from .runner import fixed_analyzer, run_once, tradingagents_analyzer
 
-    analyze = fixed_analyzer(args.fixed_rating) if args.fixed_rating else tradingagents_analyzer(cfg)
-    rows = run_once(_broker(cfg), analyze, cfg, Journal(cfg.journal_dir),
-                    trade_date=args.date or date.today().isoformat(), dry_run=args.dry_run)
+    try:
+        analyze = fixed_analyzer(args.fixed_rating) if args.fixed_rating else tradingagents_analyzer(cfg)
+        rows = run_once(_broker(cfg), analyze, cfg, Journal(cfg.journal_dir),
+                        trade_date=args.date or date.today().isoformat(), dry_run=args.dry_run)
+    except Exception as exc:  # a crashed run must not be silent
+        if cfg.notify_command and not args.dry_run:
+            from .notes import failure_text, notify
+
+            try:
+                notify(cfg.notify_command, failure_text(exc))
+            except Exception as notify_exc:
+                print(f"notify failed: {notify_exc}", file=sys.stderr)
+        raise
     for r in rows:
         r = {k: v for k, v in r.items() if k != "decision"}
         print(json.dumps(r, default=str))

@@ -10,8 +10,13 @@ from pathlib import Path
 def run_summary(rows: list[dict]) -> str:
     """A few lines a person can read on a phone."""
     start = next((r for r in rows if r["event"] == "run_start"), {})
-    lines = [f"TradingAgents demo {start.get('trade_date', '')}: NAV {start.get('nav', 0):,.0f} "
-             f"({-start.get('drawdown_pct', 0):+.1f}% since start)"]
+    head = (f"TradingAgents demo {start.get('trade_date', '')}: NAV {start.get('nav', 0):,.0f} "
+            f"({-start.get('drawdown_pct', 0):+.1f}% since start")
+    if start.get("benchmark_pct") is not None:
+        head += f"; {start['benchmark']} {start['benchmark_pct']:+.1f}%"
+    lines = [head + ")"]
+    if start.get("missed_runs"):
+        lines.append(f"WARNING: {start['missed_runs']} scheduled weekday run(s) missed since the last run")
     for r in rows:
         ev = r["event"]
         if ev == "earnings_scan":
@@ -69,3 +74,7 @@ def notify(command: str, text: str, timeout: int = 120) -> int:
     """Run the user's own notify command with the summary on stdin; its exit code."""
     return subprocess.run(command, shell=True, input=text, text=True, timeout=timeout,
                           capture_output=True).returncode
+
+
+def failure_text(exc: BaseException) -> str:
+    return f"TradingAgents demo run FAILED: {type(exc).__name__}: {str(exc)[:300]}"

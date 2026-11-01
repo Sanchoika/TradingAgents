@@ -29,6 +29,7 @@ class DemoConfig:
     retry_days: int = 2             # retry a failed or skipped reporter for this many trading days
     # Optional: folder (e.g. inside an Obsidian vault) that gets a Markdown note per run.
     notes_dir: str = ""
+    benchmark: str = "SPY"          # buy-and-hold comparison in summaries ("" to turn off)
     # Optional: shell command run after each real run; the run summary arrives on its stdin.
     notify_command: str = ""
     # traded symbol -> ticker TradingAgents analyses; a plain list means the same symbol for both.

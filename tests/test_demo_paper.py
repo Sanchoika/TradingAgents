@@ -196,3 +196,36 @@ def test_summary_note_scorecard_and_notify(tmp_path):
     out = tmp_path / "msg.txt"
     cmd = f'"{sys.executable}" -c "import sys; open(r\'{out}\', \'w\').write(sys.stdin.read())"'
     assert notify(cmd, "hello") == 0 and out.read_text() == "hello"
+
+
+def test_missed_runs_and_benchmark_in_summary(tmp_path):
+    from tradingagents.demo.notes import run_summary
+
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(instruments=["AAA"], journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+    run_once(b, fixed_analyzer("Hold"), cfg, j, "2026-10-12")     # Monday
+    p.add(110, 111, 109, 110)                                      # SPY (same fake prices) +10%
+    rows = run_once(b, fixed_analyzer("Hold"), cfg, j, "2026-10-15")  # Thursday: Tue, Wed missed
+    start = rows[0] if rows[0]["event"] == "run_start" else next(r for r in rows if r["event"] == "run_start")
+    assert start["missed_runs"] == 2 and start["benchmark_pct"] == pytest.approx(10.0)
+    text = run_summary(rows)
+    assert "SPY +10.0%" in text and "2 scheduled weekday run(s) missed" in text
+
+
+def test_crashed_run_sends_failure_alert(tmp_path, monkeypatch):
+    from tradingagents.demo import __main__ as cli
+
+    sent = []
+    monkeypatch.setattr("tradingagents.demo.notes.notify", lambda cmd, text: sent.append(text) or 0)
+
+    def boom(cfg):
+        raise RuntimeError("Yahoo down")
+
+    monkeypatch.setattr(cli, "_broker", boom)
+    cfgfile = tmp_path / "d.toml"
+    cfgfile.write_text(f'notify_command = "x"\njournal_dir = "{tmp_path.as_posix()}"\n')
+    with pytest.raises(RuntimeError):
+        cli.main(["--config", str(cfgfile), "run", "--fixed-rating", "Hold"])
+    assert sent == ["TradingAgents demo run FAILED: RuntimeError: Yahoo down"]
