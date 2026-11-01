@@ -9,6 +9,11 @@ max_analyses_per_run = 5   # free-tier friendly; extra reporters are logged as s
 risk_pct = 0.5
 atr_mult = 2.0
 paper_spread_bps = 5
+retry_days = 2             # a stock that fails (e.g. rate limit) is retried for 2 trading days
+
+# Optional outputs:
+# notes_dir = "C:/Brain/raw/trading-bot/tradingagents"   # one Markdown note per day + scorecard
+# notify_command = ""      # any command; it gets the run summary on stdin (e.g. a Hermes/Telegram sender)
 
 # 50 large, liquid US stocks across sectors (edit freely).
 universe = [
@@ -19,6 +24,13 @@ universe = [
   "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "KO", "PEP", "DIS", "BA",
 ]
 
+# Free: Google's Gemini free tier (GOOGLE_API_KEY in .env, 15 requests/minute).
+# With a ChatGPT Plus/Pro plan instead (no key; sign in once with
+# `tradingagents login chatgpt`), use:
+#   llm_provider = "chatgpt"
+#   quick_think_llm = "gpt-6-luna"
+#   deep_think_llm = "gpt-6-sol"
+# and raise max_analyses_per_run to 10. Runs count toward the plan's usage limits.
 [llm]
 llm_provider = "google"
 quick_think_llm = "gemini-3.1-flash-lite"
