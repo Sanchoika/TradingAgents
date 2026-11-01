@@ -1,0 +1,20 @@
+# Settings for: python -m tradingagents.demo --config demo.toml run
+# Copy to demo.toml and edit. Every key is optional.
+
+risk_pct = 0.5          # % of account lost if a stop is hit
+atr_mult = 2.0          # stop distance = 2 x daily ATR(14)
+max_drawdown_pct = 10.0 # stop opening new trades after a 10% fall from the starting balance
+
+# OANDA instrument = ticker TradingAgents analyses (an ETF tracking the index).
+[instruments]
+NAS100_USD = "QQQ"
+SPX500_USD = "SPY"
+
+# Cheap models for the agents. Any provider TradingAgents supports works;
+# put that provider's key in .env yourself (never in this file).
+[llm]
+llm_provider = "deepseek"
+quick_think_llm = "deepseek-flash"
+deep_think_llm = "deepseek-flash"
+max_debate_rounds = 1
+max_risk_discuss_rounds = 1
