@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-# The 50 stocks in demo.earnings.example.toml, mapped to the SPDR sector fund that holds them.
+# The 100 stocks in demo.earnings.example.toml, mapped to the SPDR sector fund that holds them.
 SECTOR_ETF = {
     **dict.fromkeys(["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "AMD", "CRM", "ADBE", "INTC", "QCOM", "CSCO",
                      "IBM", "PLTR"], "XLK"),
@@ -14,7 +14,16 @@ SECTOR_ETF = {
     **dict.fromkeys(["UNH", "LLY", "JNJ", "PFE", "MRK", "ABBV", "TMO"], "XLV"),
     **dict.fromkeys(["XOM", "CVX", "COP"], "XLE"),
     **dict.fromkeys(["WMT", "COST", "KO", "PEP"], "XLP"),
-    "BA": "XLI",
+    **dict.fromkeys(["BA", "CAT", "GE", "HON", "UNP", "RTX", "LMT", "DE", "UPS"], "XLI"),
+    # second 50 (added 2026-11-02, before the first trade)
+    **dict.fromkeys(["MU", "TXN", "AMAT", "LRCX", "NOW", "INTU", "PANW", "ANET", "ADI", "KLAC"], "XLK"),
+    **dict.fromkeys(["T", "VZ", "TMUS", "CMCSA"], "XLC"),
+    **dict.fromkeys(["WFC", "SCHW", "SPGI", "CB", "PGR", "COF"], "XLF"),
+    **dict.fromkeys(["ABT", "AMGN", "ISRG", "GILD", "BMY", "CVS", "MDT", "VRTX"], "XLV"),
+    **dict.fromkeys(["LOW", "BKNG", "TJX", "CMG", "ABNB"], "XLY"),
+    **dict.fromkeys(["PG", "PM", "MDLZ", "TGT"], "XLP"),
+    "SLB": "XLE", "LIN": "XLB",
+    **dict.fromkeys(["NEE", "DUK", "SO"], "XLU"),
 }
 
 

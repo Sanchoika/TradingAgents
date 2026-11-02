@@ -180,6 +180,13 @@ def cmd_report(args, cfg) -> int:
             result["vs_sector_fund"] = excess_vs_sector(closed, broker.bars)
         except Exception as exc:
             result["vs_sector_fund"] = {"error": str(exc)}
+    if hasattr(broker, "bars"):
+        from .report import rating_decisions, score_ratings
+
+        try:  # every rating, traded or not: more data than closed trades alone
+            result["ratings"] = score_ratings(rating_decisions(journal.events()), broker.bars, cfg.hold_days)
+        except Exception as exc:
+            result["ratings"] = {"error": str(exc)}
     print(json.dumps(result, indent=2))
     if cfg.notes_dir:
         from .notes import write_scorecard

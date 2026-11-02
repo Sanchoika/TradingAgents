@@ -389,3 +389,32 @@ def test_net_exposure_cap_and_no_short_list(tmp_path):
     run_once(b3, fixed_analyzer("Sell"), DemoConfig(instruments=["C"], max_net_positions=2,
              journal_dir=str(tmp_path / "m")), Journal(tmp_path / "m"), str(p.last))
     assert len(b3.our_open_trades()) == 3
+
+
+def test_score_ratings_counts_every_rating_and_skips_dry_runs():
+    import pandas as pd
+
+    from tradingagents.demo.report import rating_decisions, score_ratings
+
+    events = [
+        {"event": "run_start", "dry_run": True},
+        {"event": "decision", "instrument": "AAA", "ticker": "AAA", "trade_date": "2026-01-02", "rating": "Sell"},
+        {"event": "run_start", "dry_run": False},
+        {"event": "decision", "instrument": "AAA", "ticker": "AAA", "trade_date": "2026-01-02", "rating": "Buy"},
+        {"event": "decision", "instrument": "BBB", "ticker": "BBB", "trade_date": "2026-01-02", "rating": "Hold"},
+        {"event": "decision", "instrument": "CCC", "ticker": "CCC", "trade_date": "2026-01-02", "rating": "REVIEW"},
+        {"event": "decision", "instrument": "DDD", "ticker": "DDD", "trade_date": "2026-01-12", "rating": "Sell"},
+    ]
+    decisions = rating_decisions(events)
+    assert [d["rating"] for d in decisions] == ["Buy", "Hold", "Sell"]
+
+    days = pd.bdate_range("2026-01-02", periods=10)
+    def bars(symbol, as_of):  # opens rise 1 per day from 100
+        return pd.DataFrame({"Date": days, "Open": [100.0 + i for i in range(10)]})
+
+    out = score_ratings(decisions, bars, hold_days=5, today="2026-01-20")
+    # entry = open on 2026-01-05 (101), exit 6 bars later (107)
+    assert out["by_rating"]["Buy"] == {"n": 1, "mean_move_pct": round(600 / 101, 2)}
+    assert out["by_rating"]["Hold"]["n"] == 1
+    assert out["pending"] == 1  # DDD's window has not finished
+    assert out["directional"]["hit_rate"] == 1.0
