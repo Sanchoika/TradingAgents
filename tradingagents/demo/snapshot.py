@@ -31,13 +31,20 @@ DECISION_TEXT_LIMIT = 4000
 TASK_NAMES = ("TradingAgentsDemo", "TradingAgentsWatchdog")
 
 
-def _read_json(path: Path):
+def _read_json(path: Path, tries: int = 3):
+    """Parse a JSON file. The runner rewrites these files in place, so a read that
+    lands mid-write is retried briefly before it is reported as unreadable."""
+    import time
+
     if not path.exists():
         return None, "missing"
-    try:
-        return json.loads(path.read_text(encoding="utf-8")), None
-    except (OSError, ValueError) as exc:
-        return None, f"unreadable: {type(exc).__name__}"
+    for attempt in range(tries):
+        try:
+            return json.loads(path.read_text(encoding="utf-8")), None
+        except (OSError, ValueError) as exc:
+            if attempt == tries - 1:
+                return None, f"unreadable: {type(exc).__name__}"
+            time.sleep(0.5)
 
 
 def _read_journal(path: Path):
