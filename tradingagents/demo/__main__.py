@@ -85,9 +85,33 @@ def cmd_run(args, cfg) -> int:
     return 1 if any(r["event"] == "error" for r in rows) else 0
 
 
+def _dashboard(cfg):
+    from pathlib import Path
+
+    from .dashboard import write_dashboard
+
+    paper = Path(cfg.journal_dir) / "paper_account.json" if cfg.broker == "paper" else None
+    return write_dashboard(Journal(cfg.journal_dir), paper, Path(cfg.journal_dir) / "dashboard.html")
+
+
+def cmd_dashboard(args, cfg) -> int:
+    path = _dashboard(cfg)
+    print(f"dashboard: {path}")
+    if args.open:
+        import webbrowser
+
+        webbrowser.open(path.resolve().as_uri())
+    return 0
+
+
 def _publish(rows, cfg, trade_date) -> None:
-    """Note and notification; a failure here is reported but never fails the run."""
+    """Note, dashboard and notification; a failure here is reported but never fails the run."""
     from .notes import notify, run_summary, write_run_note
+
+    try:
+        print(f"dashboard: {_dashboard(cfg)}")
+    except Exception as exc:
+        print(f"dashboard not written: {exc}", file=sys.stderr)
 
     if cfg.notes_dir:
         try:
@@ -138,12 +162,15 @@ def main(argv=None) -> int:
     r.add_argument("--fixed-rating", choices=["Buy", "Overweight", "Hold", "Underweight", "Sell"],
                    help="skip the LLM and use this rating (free plumbing test)")
     sub.add_parser("report", help="score closed demo trades vs a random baseline")
+    d = sub.add_parser("dashboard", help="write dashboard.html from the journal (offline)")
+    d.add_argument("--open", action="store_true", help="open it in the browser")
     args = p.parse_args(argv)
     from .oanda import OandaError
 
     try:
         cfg = load_config(args.config)
-        return {"check": cmd_check, "run": cmd_run, "report": cmd_report}[args.cmd](args, cfg)
+        return {"check": cmd_check, "run": cmd_run, "report": cmd_report,
+                "dashboard": cmd_dashboard}[args.cmd](args, cfg)
     except (OandaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

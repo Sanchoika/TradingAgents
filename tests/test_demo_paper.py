@@ -229,3 +229,12 @@ def test_crashed_run_sends_failure_alert(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         cli.main(["--config", str(cfgfile), "run", "--fixed-rating", "Hold"])
     assert sent == ["TradingAgents demo run FAILED: RuntimeError: Yahoo down"]
+
+
+def test_position_cap_skips_new_trades(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(instruments=["AAA", "BBB", "CCC"], max_open_positions=2, journal_dir=str(tmp_path))
+    rows = run_once(b, fixed_analyzer("Buy"), cfg, Journal(tmp_path), str(p.last))
+    assert len(b.our_open_trades()) == 2
+    assert any(r["event"] == "skip" and "2 positions already open" in r["reason"] for r in rows)

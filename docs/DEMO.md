@@ -33,7 +33,8 @@ For each instrument in the config:
 3. Same direction as the open trade: keep it. Different: close it, then open the new side.
 4. New trades: stop at 2 x daily ATR(14); size so that hitting the stop loses 0.5% of
    the account. Skipped if the market is closed or the spread is above 10% of ATR.
-5. If the account falls 10% below its starting balance, no new trades are opened
+5. With `max_open_positions` set, new trades are skipped while that many are open.
+6. If the account falls 10% below its starting balance, no new trades are opened
    (closes still happen).
 
 On OANDA only trades tagged `tradingagents` are touched. Everything is written to
@@ -80,6 +81,15 @@ count toward the plan's usage limits.
   fails the run.
 - A stock that fails to analyse, or is over `max_analyses_per_run`, is retried on the
   next runs for `retry_days` trading days.
+
+### Dashboard
+
+Every real run rewrites `dashboard.html` in the journal folder
+(`~/.tradingagents/demo/` by default): account vs SPY, closed trades toward 150, win
+rate, how often random did as well, ratings given, open and closed positions,
+results by rating, the latest analyses in full, and recent runs with errors and
+missed days. It is one offline file; double-click to open it, or run
+`python -m tradingagents.demo --config demo.toml dashboard --open`.
 
 ## Checks first (no LLM calls)
 
