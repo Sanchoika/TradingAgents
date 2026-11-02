@@ -55,15 +55,25 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
         rows += [journal.write(e.pop("event"), **e) for e in broker.sync()]
     nav = broker.nav()
     state = journal.state()
-    if "start_nav" not in state and not dry_run:
-        state["start_nav"] = nav
+    bench = _benchmark_price(broker, cfg)
+    last_run = state.get("last_run_date")
+    # Weekday runs the schedule should have made between the last run and this one.
+    missed = max(int(np.busday_count(last_run, trade_date)) - 1, 0) if last_run else 0
+    if not dry_run:
+        state.setdefault("start_nav", nav)
+        if bench is not None:
+            state.setdefault("benchmark_start", bench)
+        state["last_run_date"] = trade_date
         journal.save_state(state)
     start_nav = state.get("start_nav", nav)
     drawdown = 100.0 * (start_nav - nav) / start_nav if start_nav else 0.0
     halted = drawdown >= cfg.max_drawdown_pct
+    bench_start = state.get("benchmark_start")
+    bench_pct = round(100.0 * (bench / bench_start - 1), 2) if bench and bench_start else None
     rows.append(journal.write("run_start", trade_date=trade_date, nav=nav, start_nav=start_nav,
                               drawdown_pct=round(drawdown, 2), halted=halted, dry_run=dry_run,
-                              mode=cfg.mode))
+                              mode=cfg.mode, missed_runs=missed, benchmark=cfg.benchmark,
+                              benchmark_pct=bench_pct))
     if cfg.mode == "earnings":
         rows += _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halted,
                                earnings or yahoo_earnings, now or datetime.now(UTC))
@@ -77,6 +87,16 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
             rows.append(journal.write("error", instrument=instrument, ticker=ticker,
                                       error=f"{type(exc).__name__}: {exc}"))
     return rows
+
+
+def _benchmark_price(broker, cfg):
+    """Benchmark (default SPY) mid price, for comparing the account with buy-and-hold."""
+    if not cfg.benchmark:
+        return None
+    try:
+        return broker.quote(cfg.benchmark).mid
+    except Exception:  # an OANDA account may not quote the ETF; the run goes on without it
+        return None
 
 
 def _one(broker, analyze, cfg, journal, instrument, ticker, trade_date, nav, dry_run, halted):
@@ -162,25 +182,33 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
                 reported.append(ticker)
         except Exception as exc:
             rows.append(journal.write("error", instrument=ticker, error=f"earnings lookup: {exc}"))
-    todo = [t for t in reported if t not in held]
-    skipped = todo[cfg.max_analyses_per_run:]
+    # Stocks that failed or were over the limit last time get another chance first,
+    # for up to cfg.retry_days trading days after they reported.
+    retry = {t: d for t, d in state.get("retry", {}).items()
+             if np.busday_count(d, trade_date) <= cfg.retry_days}
+    first_seen = {**dict.fromkeys(reported, trade_date), **retry}
+    todo = [t for t in dict.fromkeys([*retry, *reported]) if t not in held]
+    now_list, skipped = todo[:cfg.max_analyses_per_run], todo[cfg.max_analyses_per_run:]
     rows.append(journal.write("earnings_scan", since=since.isoformat(), reported=reported,
-                              analysing=todo[:cfg.max_analyses_per_run], skipped_over_limit=skipped))
-    if not dry_run:
-        state["last_earnings_scan"] = now_ts.isoformat()
-        journal.save_state(state)
+                              retrying=list(retry), analysing=now_list, skipped_over_limit=skipped))
 
-    for ticker in todo[:cfg.max_analyses_per_run]:
+    failed = []
+    for ticker in now_list:
         try:
             rating, decision = analyze(ticker, trade_date)
             target = plan.target_direction(rating)
             steps = ["open"] if target and not halted else (["halted"] if target else ["skip"])
             rows.append(journal.write("decision", instrument=ticker, ticker=ticker, trade_date=trade_date,
                                       rating=rating, target=target, current=0, actions=steps,
-                                      decision=decision[:2000]))
+                                      decision=decision[:4000]))
             if steps == ["open"]:
                 rows.append(_open(broker, cfg, journal, ticker, rating, target, nav, dry_run))
         except Exception as exc:
+            failed.append(ticker)
             rows.append(journal.write("error", instrument=ticker, ticker=ticker,
                                       error=f"{type(exc).__name__}: {exc}"))
+    if not dry_run:
+        state["last_earnings_scan"] = now_ts.isoformat()
+        state["retry"] = {t: first_seen[t] for t in [*failed, *skipped]}
+        journal.save_state(state)
     return rows

@@ -146,3 +146,86 @@ def test_config_rules():
     with pytest.raises(ValueError):
         DemoConfig(mode="earnings", broker="oanda", universe=["AAPL"])
     assert date  # imported for readability of fixtures
+
+
+def test_failed_and_skipped_reporters_are_retried_then_dropped(tmp_path):
+    p = Prices()
+    cfg = DemoConfig(mode="earnings", universe=["A", "B", "C"], max_analyses_per_run=1,
+                     retry_days=1, journal_dir=str(tmp_path))
+    j, b = Journal(tmp_path), _broker(tmp_path, p)
+    now = datetime(2026, 10, 13, 11, tzinfo=UTC)
+    seen = []
+
+    def analyze(t, d):
+        seen.append(t)
+        if t == "A" and seen.count("A") == 1:
+            raise RuntimeError("429 rate limit")
+        return "Hold", ""
+
+    times = {"A": [pd.Timestamp("2026-10-13 10:00", tz="UTC")],
+             "B": [pd.Timestamp("2026-10-13 10:00", tz="UTC")], "C": []}
+    run_once(b, analyze, cfg, j, "2026-10-13", earnings=times.get, now=now)
+    assert seen == ["A"] and j.state()["retry"] == {"A": "2026-10-13", "B": "2026-10-13"}
+    later = datetime(2026, 10, 14, 11, tzinfo=UTC)
+    run_once(b, analyze, cfg, j, "2026-10-14", earnings=times.get, now=later)
+    assert seen == ["A", "A"] and j.state()["retry"] == {"B": "2026-10-13"}
+    run_once(b, analyze, cfg, j, "2026-10-15", earnings=times.get, now=later)
+    assert seen == ["A", "A"]                     # B expired after retry_days
+    assert j.state()["retry"] == {}
+
+
+def test_summary_note_scorecard_and_notify(tmp_path):
+    from tradingagents.demo.notes import notify, run_summary, write_run_note, write_scorecard
+
+    rows = [{"event": "run_start", "trade_date": "2026-11-02", "nav": 100500.0, "drawdown_pct": -0.5},
+            {"event": "earnings_scan", "reported": ["NVDA"], "skipped_over_limit": []},
+            {"event": "decision", "instrument": "NVDA", "rating": "Overweight", "actions": ["open"],
+             "decision": "Rating: Overweight\nBecause."},
+            {"event": "open", "instrument": "NVDA", "units": 38.2, "stop": "191.61"},
+            {"event": "error", "instrument": "AMD", "error": "429"}]
+    text = run_summary(rows)
+    assert "NAV 100,500 (+0.5% since start)" in text and "NVDA: Overweight -> open" in text
+    assert "ERROR AMD" in text
+    note = write_run_note(rows, tmp_path / "vault", "2026-11-02")
+    write_run_note(rows, tmp_path / "vault", "2026-11-02")
+    body = note.read_text(encoding="utf-8")
+    assert body.count("---\ndate:") == 1 and body.count("## Run at") == 2 and "Because." in body
+    card = write_scorecard({"trades": 3, "enough_data": False}, tmp_path / "vault")
+    assert "too early" in card.read_text(encoding="utf-8")
+    import sys
+    out = tmp_path / "msg.txt"
+    cmd = f'"{sys.executable}" -c "import sys; open(r\'{out}\', \'w\').write(sys.stdin.read())"'
+    assert notify(cmd, "hello") == 0 and out.read_text() == "hello"
+
+
+def test_missed_runs_and_benchmark_in_summary(tmp_path):
+    from tradingagents.demo.notes import run_summary
+
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(instruments=["AAA"], journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+    run_once(b, fixed_analyzer("Hold"), cfg, j, "2026-10-12")     # Monday
+    p.add(110, 111, 109, 110)                                      # SPY (same fake prices) +10%
+    rows = run_once(b, fixed_analyzer("Hold"), cfg, j, "2026-10-15")  # Thursday: Tue, Wed missed
+    start = rows[0] if rows[0]["event"] == "run_start" else next(r for r in rows if r["event"] == "run_start")
+    assert start["missed_runs"] == 2 and start["benchmark_pct"] == pytest.approx(10.0)
+    text = run_summary(rows)
+    assert "SPY +10.0%" in text and "2 scheduled weekday run(s) missed" in text
+
+
+def test_crashed_run_sends_failure_alert(tmp_path, monkeypatch):
+    from tradingagents.demo import __main__ as cli
+
+    sent = []
+    monkeypatch.setattr("tradingagents.demo.notes.notify", lambda cmd, text: sent.append(text) or 0)
+
+    def boom(cfg):
+        raise RuntimeError("Yahoo down")
+
+    monkeypatch.setattr(cli, "_broker", boom)
+    cfgfile = tmp_path / "d.toml"
+    cfgfile.write_text(f'notify_command = "x"\njournal_dir = "{tmp_path.as_posix()}"\n')
+    with pytest.raises(RuntimeError):
+        cli.main(["--config", str(cfgfile), "run", "--fixed-rating", "Hold"])
+    assert sent == ["TradingAgents demo run FAILED: RuntimeError: Yahoo down"]

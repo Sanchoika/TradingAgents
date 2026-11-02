@@ -64,13 +64,43 @@ def _check_llm_key(cfg) -> None:
 def cmd_run(args, cfg) -> int:
     from .runner import fixed_analyzer, run_once, tradingagents_analyzer
 
-    analyze = fixed_analyzer(args.fixed_rating) if args.fixed_rating else tradingagents_analyzer(cfg)
-    rows = run_once(_broker(cfg), analyze, cfg, Journal(cfg.journal_dir),
-                    trade_date=args.date or date.today().isoformat(), dry_run=args.dry_run)
+    try:
+        analyze = fixed_analyzer(args.fixed_rating) if args.fixed_rating else tradingagents_analyzer(cfg)
+        rows = run_once(_broker(cfg), analyze, cfg, Journal(cfg.journal_dir),
+                        trade_date=args.date or date.today().isoformat(), dry_run=args.dry_run)
+    except Exception as exc:  # a crashed run must not be silent
+        if cfg.notify_command and not args.dry_run:
+            from .notes import failure_text, notify
+
+            try:
+                notify(cfg.notify_command, failure_text(exc))
+            except Exception as notify_exc:
+                print(f"notify failed: {notify_exc}", file=sys.stderr)
+        raise
     for r in rows:
         r = {k: v for k, v in r.items() if k != "decision"}
         print(json.dumps(r, default=str))
+    if not args.dry_run:
+        _publish(rows, cfg, trade_date=args.date or date.today().isoformat())
     return 1 if any(r["event"] == "error" for r in rows) else 0
+
+
+def _publish(rows, cfg, trade_date) -> None:
+    """Note and notification; a failure here is reported but never fails the run."""
+    from .notes import notify, run_summary, write_run_note
+
+    if cfg.notes_dir:
+        try:
+            print(f"note: {write_run_note(rows, cfg.notes_dir, trade_date)}")
+        except OSError as exc:
+            print(f"note not written: {exc}", file=sys.stderr)
+    if cfg.notify_command:
+        try:
+            code = notify(cfg.notify_command, run_summary(rows))
+            if code:
+                print(f"notify command exited with {code}", file=sys.stderr)
+        except Exception as exc:
+            print(f"notify failed: {exc}", file=sys.stderr)
 
 
 def cmd_report(args, cfg) -> int:
@@ -88,6 +118,10 @@ def cmd_report(args, cfg) -> int:
     result = summarize(closed, spread)
     result["open_trades"] = len(broker.our_open_trades())
     print(json.dumps(result, indent=2))
+    if cfg.notes_dir:
+        from .notes import write_scorecard
+
+        print(f"scorecard: {write_scorecard(result, cfg.notes_dir)}")
     if result.get("trades") and not result["enough_data"]:
         print("Fewer than 150 closed trades: too early to judge, keep it running.")
     return 0

@@ -62,6 +62,24 @@ page); one full analysis is roughly 20-40 requests, so expect a handful of analy
 day. `max_analyses_per_run` keeps earnings mode inside that. Fully offline alternative:
 Ollama with a local model (`llm_provider = "ollama"`), if your PC can run one.
 
+### ChatGPT plan instead of an API key
+
+With ChatGPT Plus or Pro, sign in once with `tradingagents login chatgpt` (it opens
+your browser) and set `llm_provider = "chatgpt"` with OpenAI model names in `[llm]`
+(see the comment in `demo.earnings.example.toml`). No key is stored in `.env`; runs
+count toward the plan's usage limits.
+
+### Notes and alerts
+
+- `notes_dir`: each real run appends to `<date> TradingAgents.md` there (summary plus
+  every analysis in full), and `report` rewrites `TradingAgents Scorecard.md`. Point it
+  inside an Obsidian vault.
+- `notify_command`: run after each real run with the short summary on stdin, for
+  example a command that forwards it to Telegram through Hermes. Its failure never
+  fails the run.
+- A stock that fails to analyse, or is over `max_analyses_per_run`, is retried on the
+  next runs for `retry_days` trading days.
+
 ## Checks first (no LLM calls)
 
 ```powershell
