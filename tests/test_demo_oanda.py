@@ -249,7 +249,7 @@ def test_example_config_loads():
     assert cfg.broker == "paper" and cfg.instruments["BTC-USD"] == "BTC-USD"
     assert cfg.llm["llm_provider"] == "google"
     earn = load_config(root / "demo.earnings.example.toml")
-    assert earn.mode == "earnings" and len(earn.universe) == 50
+    assert earn.mode == "earnings" and len(earn.universe) == 100
     watch = load_config(root / "demo.watchlist.example.toml")
     assert watch.mode == "watchlist" and "~" not in watch.journal_dir
     assert watch.journal_dir != earn.journal_dir and watch.llm["llm_provider"] == "chatgpt"
