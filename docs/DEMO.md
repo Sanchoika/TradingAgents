@@ -93,6 +93,12 @@ count toward the plan's usage limits.
   95% interval, random baseline, long vs short). If the ChatGPT sign-in lapses the
   digest says so and gives the command to fix it.
 
+- **Earnings dates are cross-checked** against SEC EDGAR 8-K item 2.02 filings: each
+  `earnings_scan` row has an `edgar_check` per reporter, and the digest flags any date
+  EDGAR does not confirm.
+- `report` also compares every closed trade with its sector fund (XLK, XLF, ...) in the
+  trade's own direction (`vs_sector_fund`), so a rising market is not mistaken for skill.
+
 ### Dashboard
 
 Every real run rewrites `dashboard.html` in the journal folder
@@ -173,5 +179,5 @@ trades with coin-flip directions did at least as well. An edge needs the confide
 interval above zero **and** a small `p_random_as_good` after ~150 trades.
 
 Known limits: LLM output varies run to run; Yahoo's free data can be late or missing;
-the paper account charges no financing or borrow fees and counts P&L in each symbol's
+the paper account charges a flat borrow fee on shorts (no hard-to-borrow refusals, no long financing) and counts P&L in each symbol's
 own currency; on OANDA the agents read the tracking ETF, not the CFD.
