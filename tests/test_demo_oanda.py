@@ -260,3 +260,16 @@ def test_report_baseline_and_ci():
     assert r["total_pnl"] == 300 and r["win_rate"] == 1.0
     assert r["mean_pnl_ci95"] == [10.0, 10.0]
     assert r["p_random_as_good"] < 0.01 and r["enough_data"] is False
+
+
+@pytest.mark.parametrize("mild,expected_units", [(0.5, 62.0), (1.0, 125.0), (0.0, None)])
+def test_mild_ratings_trade_a_share_of_the_risk(tmp_path, mild, expected_units):
+    b = FakeBroker()
+    cfg = DemoConfig(instruments={"NAS100_USD": "QQQ"}, journal_dir=str(tmp_path), mild_size=mild)
+    run_once(b, fixed_analyzer("Underweight"), cfg, Journal(tmp_path), "2026-11-02")
+    if expected_units is None:
+        assert b.orders == []
+    else:
+        assert b.orders == [("NAS100_USD", -expected_units, "103.9")]
+    # Buy/Sell always use the full budget.
+    assert plan.size_factor("Sell", mild) == 1.0
