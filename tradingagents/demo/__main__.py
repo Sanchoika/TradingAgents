@@ -85,18 +85,30 @@ def cmd_run(args, cfg) -> int:
     return 1 if any(r["event"] == "error" for r in rows) else 0
 
 
-def _dashboard(cfg):
-    from pathlib import Path
-
+def _dashboard(cfg, prices: bool = True):
+    """Rebuild the read-only dashboard site from saved files (never touches the account)."""
     from .dashboard import write_dashboard
 
-    paper = Path(cfg.journal_dir) / "paper_account.json" if cfg.broker == "paper" else None
-    return write_dashboard(Journal(cfg.journal_dir), paper, Path(cfg.journal_dir) / "dashboard.html")
+    return write_dashboard(cfg, prices=prices)
+
+
+def _sync_dashboard(cfg) -> int | None:
+    """Copy the dashboard site to where it is viewed (dashboard_sync_command); its exit code."""
+    if not cfg.dashboard_sync_command:
+        return None
+    import subprocess
+
+    return subprocess.run(cfg.dashboard_sync_command, shell=True, capture_output=True, text=True,
+                          timeout=180).returncode
 
 
 def cmd_dashboard(args, cfg) -> int:
-    path = _dashboard(cfg)
+    path = _dashboard(cfg, prices=not args.no_prices)
     print(f"dashboard: {path}")
+    print(f"site folder: {path.parent / 'site'}")
+    if args.sync:
+        code = _sync_dashboard(cfg)
+        print("sync: no dashboard_sync_command set" if code is None else f"sync exit code {code}")
     if args.open:
         import webbrowser
 
@@ -122,8 +134,11 @@ def _publish(rows, cfg, trade_date) -> None:
 
     try:
         print(f"dashboard: {_dashboard(cfg)}")
+        code = _sync_dashboard(cfg)
+        if code:
+            print(f"dashboard sync exited with {code}", file=sys.stderr)
     except Exception as exc:
-        print(f"dashboard not written: {exc}", file=sys.stderr)
+        print(f"dashboard not written or not synced: {exc}", file=sys.stderr)
 
     if cfg.notes_dir:
         try:
@@ -211,6 +226,8 @@ def main(argv=None) -> int:
     sub.add_parser("watchdog", help="alert if a weekday's scheduled run is missing from the journal")
     d = sub.add_parser("dashboard", help="write dashboard.html from the journal (offline)")
     d.add_argument("--open", action="store_true", help="open it in the browser")
+    d.add_argument("--no-prices", action="store_true", help="skip re-pricing open positions (no network)")
+    d.add_argument("--sync", action="store_true", help="also run dashboard_sync_command")
     args = p.parse_args(argv)
     from .oanda import OandaError
 

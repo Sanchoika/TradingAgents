@@ -30,6 +30,9 @@ class DemoConfig:
     retry_days: int = 2             # retry a failed or skipped reporter for this many trading days
     # Optional: folder (e.g. inside an Obsidian vault) that gets a Markdown note per run.
     notes_dir: str = ""
+    # Shell command run after each dashboard rebuild, e.g. to copy the site folder to a
+    # private web host. Empty = off. Read-only for trading: it only copies files.
+    dashboard_sync_command: str = ""
     benchmark: str = "SPY"          # buy-and-hold comparison in summaries ("" to turn off)
     # Optional: shell command run after each real run; the run summary arrives on its stdin.
     notify_command: str = ""
