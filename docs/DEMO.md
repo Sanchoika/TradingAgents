@@ -180,6 +180,14 @@ confidence interval for P&L per trade, and `p_random_as_good`: how often the sam
 trades with coin-flip directions did at least as well. An edge needs the confidence
 interval above zero **and** a small `p_random_as_good` after ~150 trades.
 
+`ratings` scores **every** rating, traded or not (Holds and trades skipped by a cap
+included): the stock's move from the next open over the same window a trade holds,
+at mid prices. `directional.hit_rate` is the share of Buy/Overweight/Sell/Underweight
+calls that pointed the right way; `by_rating` should rise from Sell to Buy if the
+ratings carry information. It fills faster than closed trades and costs nothing.
+Trades in one earnings week move together, so read it together with
+`vs_sector_fund`, not as independent coin flips.
+
 Known limits: LLM output varies run to run; Yahoo's free data can be late or missing;
 the paper account charges a flat borrow fee on shorts (no hard-to-borrow refusals, no long financing) and counts P&L in each symbol's
 own currency; on OANDA the agents read the tracking ETF, not the CFD.
