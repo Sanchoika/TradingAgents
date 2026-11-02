@@ -81,6 +81,15 @@ count toward the plan's usage limits.
 - A stock that fails to analyse, or is over `max_analyses_per_run`, is retried on the
   next runs for `retry_days` trading days.
 
+### Dashboard
+
+Every real run rewrites `dashboard.html` in the journal folder
+(`~/.tradingagents/demo/` by default): account vs SPY, closed trades toward 150, win
+rate, how often random did as well, ratings given, open and closed positions,
+results by rating, the latest analyses in full, and recent runs with errors and
+missed days. It is one offline file; double-click to open it, or run
+`python -m tradingagents.demo --config demo.toml dashboard --open`.
+
 ## Checks first (no LLM calls)
 
 ```powershell
