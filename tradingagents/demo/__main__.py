@@ -142,6 +142,23 @@ def _publish(rows, cfg, trade_date) -> None:
             print(f"notify failed: {exc}", file=sys.stderr)
 
 
+def cmd_watchdog(args, cfg) -> int:
+    """Alert (through notify_command) when a weekday's scheduled run left no journal entry."""
+    from datetime import datetime
+
+    from .notes import missing_run, notify
+
+    day = missing_run(Journal(cfg.journal_dir).events(), datetime.now().astimezone())
+    if day is None:
+        print("ok: the latest scheduled run is in the journal")
+        return 0
+    text = f"TradingAgents demo: NO RUN recorded for {day}. Is the PC on and logged in? See demo.log."
+    print(text)
+    if cfg.notify_command:
+        notify(cfg.notify_command, text)
+    return 1
+
+
 def cmd_report(args, cfg) -> int:
     from .report import summarize
 
@@ -177,6 +194,7 @@ def main(argv=None) -> int:
     r.add_argument("--fixed-rating", choices=["Buy", "Overweight", "Hold", "Underweight", "Sell"],
                    help="skip the LLM and use this rating (free plumbing test)")
     sub.add_parser("report", help="score closed demo trades vs a random baseline")
+    sub.add_parser("watchdog", help="alert if a weekday's scheduled run is missing from the journal")
     d = sub.add_parser("dashboard", help="write dashboard.html from the journal (offline)")
     d.add_argument("--open", action="store_true", help="open it in the browser")
     args = p.parse_args(argv)
@@ -185,7 +203,7 @@ def main(argv=None) -> int:
     try:
         cfg = load_config(args.config)
         return {"check": cmd_check, "run": cmd_run, "report": cmd_report,
-                "dashboard": cmd_dashboard}[args.cmd](args, cfg)
+                "dashboard": cmd_dashboard, "watchdog": cmd_watchdog}[args.cmd](args, cfg)
     except (OandaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

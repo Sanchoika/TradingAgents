@@ -105,3 +105,22 @@ def failure_text(exc: BaseException) -> str:
     text = f"TradingAgents demo run FAILED: {type(exc).__name__}: {str(exc)[:300]}"
     hint = auth_hint(f"{type(exc).__name__} {exc}")
     return f"{text}\n{hint}" if hint else text
+
+
+def missing_run(events: list[dict], now, run_hour: int = 8, grace_hours: int = 1) -> str | None:
+    """Date of the latest weekday whose scheduled run has no journal entry, else None.
+
+    ``now`` is a timezone-aware time; the schedule is New York time. A run counts when the
+    journal has a real (not dry-run) ``run_start`` for that date or a later one.
+    """
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    et = now.astimezone(ZoneInfo("America/New_York"))
+    day = et.date()
+    if et.hour < run_hour + grace_hours:
+        day -= timedelta(days=1)
+    while day.weekday() > 4:
+        day -= timedelta(days=1)
+    done = [e["trade_date"] for e in events if e["event"] == "run_start" and not e.get("dry_run")]
+    return None if done and max(done) >= day.isoformat() else day.isoformat()

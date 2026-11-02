@@ -145,6 +145,22 @@ schtasks /Create /TN TradingAgentsDemo /SC WEEKLY /D MON /ST 16:00 ^
 
 Or on a Linux server with cron: `0 12 * * 1 cd ~/TradingAgents && .venv/bin/python -m tradingagents.demo --config demo.toml run >> demo.log 2>&1` (UTC).
 
+## Keeping it running
+
+- **Daily watchdog:** `python -m tradingagents.demo --config demo.toml watchdog` alerts
+  (through `notify_command`) when a weekday's run has no journal entry. Schedule it an
+  hour and a half after the run:
+  `schtasks /Create /TN TradingAgentsWatchdog /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 09:30 /TR "cmd /c cd /d C:\bbt\TradingAgents && .venv\Scripts\python -m tradingagents.demo --config demo.toml watchdog >> watchdog.log 2>&1" /F`
+  It cannot notice a day the PC was off at both times, but the Monday scorecard and the
+  missed-run line in the next digest still show the gap.
+- **Run while logged out:** Task Scheduler's default is "interactive only". To run
+  whether or not you are logged on, open Task Scheduler, double-click the task, choose
+  "Run whether user is logged on or not" and enter your Windows password there (the PC
+  still has to be on). Or add `/RU <you> /RP` to the `schtasks /Create` command, which
+  asks for the password at the prompt.
+- **Second test:** `demo.watchlist.example.toml` runs a weekly watchlist (index/gold ETFs,
+  BTC) in its own journal and paper account. Copy it to `demo-watchlist.toml`.
+
 ## Reading the results
 
 ```powershell

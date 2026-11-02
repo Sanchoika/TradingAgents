@@ -1,0 +1,26 @@
+# A second, independent test: rate a small watchlist once a week (Mondays) and trade it.
+# It uses its own journal and paper account, so it never mixes with the earnings test.
+# Copy to demo-watchlist.toml (also gitignored) and schedule it weekly, e.g. Monday 08:30 ET:
+#   python -m tradingagents.demo --config demo-watchlist.toml run
+
+broker = "paper"
+mode = "watchlist"
+journal_dir = "~/.tradingagents/demo-watchlist"
+risk_pct = 0.5
+mild_size = 0.5
+atr_mult = 2.0
+max_open_positions = 10
+paper_spread_bps = 5
+paper_borrow_bps_per_year = 300
+
+# Index and gold ETFs, plus crypto. TradingAgents' analysts know stocks best, so treat
+# this as the weaker of the two tests.
+instruments = ["QQQ", "SPY", "GLD", "BTC-USD"]
+
+# The ChatGPT plan, matching the earnings test on the PC, so ratings stay comparable.
+[llm]
+llm_provider = "chatgpt"
+quick_think_llm = "gpt-6-luna"
+deep_think_llm = "gpt-6-sol"
+max_debate_rounds = 1
+max_risk_discuss_rounds = 1

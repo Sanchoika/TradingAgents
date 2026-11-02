@@ -49,6 +49,7 @@ class DemoConfig:
     llm: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        self.journal_dir = str(Path(self.journal_dir).expanduser())
         if not 0 < self.risk_pct <= 2:
             raise ValueError("risk_pct must be in (0, 2]; this is a demo test, keep risk small")
         if isinstance(self.instruments, list):

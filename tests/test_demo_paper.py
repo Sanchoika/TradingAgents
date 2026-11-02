@@ -299,3 +299,19 @@ def test_earnings_session_hint_report_path_and_weekly_text(tmp_path):
                         "mean_pnl_ci95": [-3.0, 27.0], "p_random_as_good": 0.2,
                         "by_side": {"long": {"trades": 6, "mean_pnl": 20.0, "win_rate": 0.7}}})
     assert "10/150" in text and "random as good 20%" in text and "long 6" in text
+
+
+def test_watchdog_finds_missing_weekday_runs():
+    from tradingagents.demo.notes import missing_run
+
+    ran = [{"event": "run_start", "trade_date": "2026-11-02", "dry_run": False}]
+    dry = [{"event": "run_start", "trade_date": "2026-11-03", "dry_run": True}]
+    tue_9am = datetime(2026, 11, 3, 14, 30, tzinfo=UTC)         # 09:30 ET Tuesday
+    tue_8am = datetime(2026, 11, 3, 13, 0, tzinfo=UTC)          # 08:00 ET, inside the grace hour
+    sun = datetime(2026, 11, 8, 15, 0, tzinfo=UTC)
+    assert missing_run(ran, tue_9am) == "2026-11-03"            # Tuesday's run never happened
+    assert missing_run(ran, tue_8am) is None                    # still waiting on Tuesday: Monday is done
+    assert missing_run(ran + dry, tue_9am) == "2026-11-03"      # a dry run does not count
+    assert missing_run(ran + [{"event": "run_start", "trade_date": "2026-11-03"}], tue_9am) is None
+    assert missing_run(ran, sun) == "2026-11-06"                # weekend: the last weekday is Friday
+    assert missing_run([], tue_9am) == "2026-11-03"
