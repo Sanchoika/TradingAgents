@@ -102,7 +102,7 @@ def _benchmark_price(broker, cfg):
 def _one(broker, analyze, cfg, journal, instrument, ticker, trade_date, nav, dry_run, halted):
     rows = []
     rating, decision = analyze(ticker, trade_date)
-    target = plan.target_direction(rating)
+    target = plan.target_direction(rating, cfg.mild_size)
     trades = broker.our_open_trades(instrument)
     current = plan.current_direction(trades)
     steps = plan.actions(current, target)
@@ -139,7 +139,8 @@ def _open(broker, cfg, journal, instrument, rating, direction, nav, dry_run):
         return journal.write("skip", instrument=instrument, reason="spread too wide",
                              spread=quote.spread, atr=a)
     distance = cfg.atr_mult * a
-    units = plan.position_units(nav, cfg.risk_pct, distance, quote.quote_to_home,
+    risk_pct = cfg.risk_pct * plan.size_factor(rating, cfg.mild_size)
+    units = plan.position_units(nav, risk_pct, distance, quote.quote_to_home,
                                 spec.units_precision, cfg.max_units.get(instrument))
     if units < spec.min_units:
         return journal.write("skip", instrument=instrument, reason="size below minimum",
@@ -149,7 +150,7 @@ def _open(broker, cfg, journal, instrument, rating, direction, nav, dry_run):
     signed = units * direction
     info = {"instrument": instrument, "rating": rating, "units": signed, "quote_entry": entry, "stop": stop,
                 "atr": round(a, 6), "spread": round(quote.spread, 6),
-                "risk_amount": round(nav * cfg.risk_pct / 100, 2)}
+                "risk_amount": round(nav * risk_pct / 100, 2)}
     if dry_run:
         return journal.write("open_dry_run", **info)
     fill = broker.market_order(instrument, signed, stop, comment=f"{rating}")
@@ -196,7 +197,7 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
     for ticker in now_list:
         try:
             rating, decision = analyze(ticker, trade_date)
-            target = plan.target_direction(rating)
+            target = plan.target_direction(rating, cfg.mild_size)
             steps = ["open"] if target and not halted else (["halted"] if target else ["skip"])
             rows.append(journal.write("decision", instrument=ticker, ticker=ticker, trade_date=trade_date,
                                       rating=rating, target=target, current=0, actions=steps,

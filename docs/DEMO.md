@@ -28,7 +28,8 @@ For each instrument in the config:
 
 1. Runs the full TradingAgents analysis for today and reads the final rating.
 2. Maps it to a target: Buy/Overweight = long, Hold = flat, Underweight/Sell = short.
-   REVIEW (unreadable decision) = do nothing.
+   REVIEW (unreadable decision) = do nothing. Overweight/Underweight are milder views, so
+   they trade `mild_size` (default 0.5) of the risk budget; `mild_size = 0` skips them.
 3. Same direction as the open trade: keep it. Different: close it, then open the new side.
 4. New trades: stop at 2 x daily ATR(14); size so that hitting the stop loses 0.5% of
    the account. Skipped if the market is closed or the spread is above 10% of ATR.

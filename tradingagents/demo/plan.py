@@ -12,9 +12,23 @@ import math
 DIRECTION = {"Buy": 1, "Overweight": 1, "Hold": 0, "Underweight": -1, "Sell": -1}
 
 
-def target_direction(rating: str | None) -> int | None:
-    """+1 long, -1 short, 0 flat; None for REVIEW or anything unreadable (no action)."""
-    return DIRECTION.get((rating or "").strip().capitalize())
+MILD = ("Overweight", "Underweight")
+
+
+def target_direction(rating: str | None, mild_size: float = 1.0) -> int | None:
+    """+1 long, -1 short, 0 flat; None for REVIEW or anything unreadable (no action).
+
+    With ``mild_size`` 0, Overweight and Underweight mean flat rather than a trade.
+    """
+    name = (rating or "").strip().capitalize()
+    if name in MILD and mild_size == 0:
+        return 0
+    return DIRECTION.get(name)
+
+
+def size_factor(rating: str | None, mild_size: float = 1.0) -> float:
+    """Share of the full risk budget a rating trades: Buy/Sell 1, Overweight/Underweight mild_size."""
+    return mild_size if (rating or "").strip().capitalize() in MILD else 1.0
 
 
 def current_direction(trades: list[dict]) -> int:

@@ -35,6 +35,8 @@ class DemoConfig:
     # traded symbol -> ticker TradingAgents analyses; a plain list means the same symbol for both.
     instruments: dict[str, str] | list[str] = field(default_factory=dict)
     risk_pct: float = 0.5           # % of NAV lost if the stop is hit
+    # Share of risk_pct an Overweight/Underweight trades (Buy/Sell trade all of it); 0 = no trade.
+    mild_size: float = 0.5
     atr_period: int = 14
     atr_mult: float = 2.0           # stop distance = atr_mult * ATR(daily)
     max_spread_atr: float = 0.1     # skip the entry if spread > this fraction of ATR
@@ -57,6 +59,8 @@ class DemoConfig:
             raise ValueError('mode must be "watchlist" or "earnings"')
         if self.mode == "earnings" and (self.broker != "paper" or not self.universe):
             raise ValueError("earnings mode needs broker = \"paper\" and a universe of stock tickers")
+        if not 0 <= self.mild_size <= 1:
+            raise ValueError("mild_size must be between 0 and 1")
         if self.atr_mult <= 0 or self.atr_period < 2:
             raise ValueError("atr_mult must be > 0 and atr_period >= 2")
 

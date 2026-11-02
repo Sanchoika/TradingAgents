@@ -7,6 +7,7 @@ mode = "earnings"
 hold_days = 5
 max_analyses_per_run = 5   # free-tier friendly; extra reporters are logged as skipped
 risk_pct = 0.5
+mild_size = 0.5         # Overweight/Underweight trade half the risk of Buy/Sell (0 = skip them)
 atr_mult = 2.0
 paper_spread_bps = 5
 retry_days = 2             # a stock that fails (e.g. rate limit) is retried for 2 trading days
