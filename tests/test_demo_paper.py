@@ -367,3 +367,25 @@ def test_excess_return_over_sector_fund_in_trade_direction():
     fund = 100 * (107 / 101 - 1)
     assert r["mean_excess_pct"] == pytest.approx(((10 - fund) + (-10 + fund)) / 2, abs=0.01)
     assert r["share_beating_sector"] == 0.5
+
+
+def test_net_exposure_cap_and_no_short_list(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(instruments=["A", "B", "C", "D"], max_net_positions=2, no_short=["Z"],
+                     journal_dir=str(tmp_path))
+    rows = run_once(b, fixed_analyzer("Buy"), cfg, Journal(tmp_path), str(p.last))
+    assert len(b.our_open_trades()) == 2                      # third and fourth long would make net +3
+    assert sum("net exposure already +2" in r.get("reason", "") for r in rows) == 2
+    short_cfg = DemoConfig(instruments=["Z", "A"], no_short=["Z"], journal_dir=str(tmp_path / "s"))
+    b2 = _broker(tmp_path / "s", p)
+    rows = run_once(b2, fixed_analyzer("Sell"), short_cfg, Journal(tmp_path / "s"), str(p.last))
+    assert [t["instrument"] for t in b2.our_open_trades()] == ["A"]
+    assert any(r.get("reason") == "on the no-short list" for r in rows)
+    # An opposite-side trade is still allowed when the book is already net long.
+    cfg2 = DemoConfig(instruments=["A", "B"], max_net_positions=2, journal_dir=str(tmp_path / "m"))
+    b3 = _broker(tmp_path / "m", p)
+    run_once(b3, fixed_analyzer("Buy"), cfg2, Journal(tmp_path / "m"), str(p.last))
+    run_once(b3, fixed_analyzer("Sell"), DemoConfig(instruments=["C"], max_net_positions=2,
+             journal_dir=str(tmp_path / "m")), Journal(tmp_path / "m"), str(p.last))
+    assert len(b3.our_open_trades()) == 3

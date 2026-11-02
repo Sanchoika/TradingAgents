@@ -6,6 +6,8 @@ broker = "paper"        # "paper" (free, no signup) or "oanda" (OANDA practice a
 mode = "watchlist"      # rate every instrument each run; see demo.earnings.example.toml for earnings mode
 risk_pct = 0.5
 max_open_positions = 15  # new trades are skipped while 15 are open
+max_net_positions = 8    # ...and while longs and shorts are 8 apart in the same direction
+no_short = []            # symbols that cannot be shorted (hard to borrow)
 mild_size = 0.5         # Overweight/Underweight trade half the risk of Buy/Sell (0 = skip them)          # % of account lost if a stop is hit
 atr_mult = 2.0          # stop distance = 2 x daily ATR(14)
 max_drawdown_pct = 10.0 # stop opening new trades after a 10% fall from the starting balance

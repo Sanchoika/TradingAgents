@@ -169,6 +169,13 @@ def _open(broker, cfg, journal, instrument, rating, direction, nav, dry_run):
     if cfg.max_open_positions and len(broker.our_open_trades()) >= cfg.max_open_positions:
         return journal.write("skip", instrument=instrument, rating=rating,
                              reason=f"{cfg.max_open_positions} positions already open")
+    if direction < 0 and instrument in cfg.no_short:
+        return journal.write("skip", instrument=instrument, rating=rating, reason="on the no-short list")
+    if cfg.max_net_positions:
+        net = sum(1 if float(t["currentUnits"]) > 0 else -1 for t in broker.our_open_trades())
+        if net * direction >= cfg.max_net_positions:
+            return journal.write("skip", instrument=instrument, rating=rating,
+                                 reason=f"net exposure already {net:+d} positions")
     spec = broker.instrument(instrument)
     quote = broker.quote(instrument)
     if not quote.tradeable:
