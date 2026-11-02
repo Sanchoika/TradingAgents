@@ -20,13 +20,19 @@ retry_days = 2             # a stock that fails (e.g. rate limit) is retried for
 # notes_dir = "C:/Brain/outputs/trading-demo"   # one Markdown note per day + scorecard
 # notify_command = "hermes send --to telegram --quiet"   # gets the run summary on stdin
 
-# 50 large, liquid US stocks across sectors (edit freely).
+# 100 large, liquid US stocks across sectors (edit freely).
 universe = [
   "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "ORCL", "AMD",
   "NFLX", "CRM", "ADBE", "INTC", "QCOM", "CSCO", "IBM", "UBER", "SHOP", "PLTR",
   "JPM", "BAC", "GS", "MS", "V", "MA", "PYPL", "AXP", "BLK", "C",
   "UNH", "LLY", "JNJ", "PFE", "MRK", "ABBV", "TMO", "XOM", "CVX", "COP",
   "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "KO", "PEP", "DIS", "BA",
+  # second 50, added 2026-11-02 before the first trade (twice the earnings events)
+  "MU", "TXN", "AMAT", "LRCX", "NOW", "INTU", "PANW", "ANET", "ADI", "KLAC",
+  "T", "VZ", "TMUS", "CMCSA", "WFC", "SCHW", "SPGI", "CB", "PGR", "COF",
+  "ABT", "AMGN", "ISRG", "GILD", "BMY", "CVS", "MDT", "VRTX", "CAT", "GE",
+  "HON", "UNP", "RTX", "LMT", "DE", "UPS", "LOW", "BKNG", "TJX", "CMG",
+  "ABNB", "PG", "PM", "MDLZ", "TGT", "SLB", "LIN", "NEE", "DUK", "SO",
 ]
 
 # Free: Google's Gemini free tier (GOOGLE_API_KEY in .env, 15 requests/minute).
@@ -35,7 +41,7 @@ universe = [
 #   llm_provider = "chatgpt"
 #   quick_think_llm = "gpt-6-luna"
 #   deep_think_llm = "gpt-6-sol"
-# and raise max_analyses_per_run to 10. Runs count toward the plan's usage limits.
+# and raise max_analyses_per_run to 20. Runs count toward the plan's usage limits.
 [llm]
 llm_provider = "google"
 quick_think_llm = "gemini-3.1-flash-lite"
