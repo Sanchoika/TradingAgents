@@ -139,6 +139,9 @@ def _one(broker, analyze, cfg, journal, instrument, ticker, trade_date, nav, dry
 
 
 def _open(broker, cfg, journal, instrument, rating, direction, nav, dry_run):
+    if cfg.max_open_positions and len(broker.our_open_trades()) >= cfg.max_open_positions:
+        return journal.write("skip", instrument=instrument, rating=rating,
+                             reason=f"{cfg.max_open_positions} positions already open")
     spec = broker.instrument(instrument)
     quote = broker.quote(instrument)
     if not quote.tradeable:

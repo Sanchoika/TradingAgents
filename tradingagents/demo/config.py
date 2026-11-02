@@ -40,6 +40,7 @@ class DemoConfig:
     atr_period: int = 14
     atr_mult: float = 2.0           # stop distance = atr_mult * ATR(daily)
     max_spread_atr: float = 0.1     # skip the entry if spread > this fraction of ATR
+    max_open_positions: int = 0     # skip new trades while this many are open (0 = no limit)
     max_drawdown_pct: float = 10.0  # stop opening trades once NAV falls this far from the start
     max_units: dict[str, float] = field(default_factory=dict)
     journal_dir: str = str(Path.home() / ".tradingagents" / "demo")
