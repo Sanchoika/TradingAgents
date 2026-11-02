@@ -73,6 +73,7 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
     rows.append(journal.write("run_start", trade_date=trade_date, nav=nav, start_nav=start_nav,
                               drawdown_pct=round(drawdown, 2), halted=halted, dry_run=dry_run,
                               mode=cfg.mode, missed_runs=missed, benchmark=cfg.benchmark,
+                              llm=_llm_label(cfg),
                               benchmark_pct=bench_pct))
     if cfg.mode == "earnings":
         rows += _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halted,
@@ -87,6 +88,14 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
             rows.append(journal.write("error", instrument=instrument, ticker=ticker,
                                       error=f"{type(exc).__name__}: {exc}"))
     return rows
+
+
+def _llm_label(cfg) -> str:
+    """Which models made this run's ratings, so a model change is visible in the journal."""
+    from tradingagents.default_config import DEFAULT_CONFIG
+
+    c = {**DEFAULT_CONFIG, **cfg.llm}
+    return f"{c['llm_provider']}:{c['quick_think_llm']}/{c['deep_think_llm']}"
 
 
 def _benchmark_price(broker, cfg):
