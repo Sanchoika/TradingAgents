@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -26,8 +28,14 @@ def tradingagents_analyzer(cfg: DemoConfig) -> Analyzer:
 
     def analyze(ticker: str, trade_date: str) -> tuple[str, str]:
         final_state, rating = graph.propagate(ticker, trade_date)
+        try:  # keep the full multi-agent report for later review; never fail the run over it
+            folder = Path(cfg.journal_dir) / "reports" / f"{trade_date}_{ticker}"
+            analyze.reports[ticker] = str(graph.save_reports(final_state, ticker, save_path=folder))
+        except Exception:
+            logging.getLogger(__name__).warning("could not save the report for %s", ticker, exc_info=True)
         return rating, final_state.get("final_trade_decision", "")
 
+    analyze.reports = {}
     return analyze
 
 
@@ -171,6 +179,14 @@ def _open(broker, cfg, journal, instrument, rating, direction, nav, dry_run):
                          half_spread_cost=fill.get("halfSpreadCost"))
 
 
+def _session(ts: pd.Timestamp) -> str:
+    """Whether a report came out before the US open, during the session, or after the close."""
+    et = ts.tz_localize("UTC").tz_convert("America/New_York") if ts.tzinfo is None \
+        else ts.tz_convert("America/New_York")
+    minutes = et.hour * 60 + et.minute
+    return "before open" if minutes < 570 else ("after close" if minutes >= 960 else "during session")
+
+
 def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halted, earnings, now):
     """Close trades held hold_days, then rate the universe stocks that just reported."""
     rows = []
@@ -188,11 +204,13 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
         else pd.Timestamp(now - timedelta(days=1))
     now_ts = pd.Timestamp(now)
     held = {t["instrument"] for t in broker.our_open_trades()}
-    reported = []
+    reported, report_times = [], {}
     for ticker in cfg.universe:
         try:
-            if any(since < pd.Timestamp(ts) <= now_ts for ts in earnings(ticker)):
+            hits = [pd.Timestamp(ts) for ts in earnings(ticker) if since < pd.Timestamp(ts) <= now_ts]
+            if hits:
                 reported.append(ticker)
+                report_times[ticker] = f"{hits[0].isoformat()} ({_session(hits[0])})"
         except Exception as exc:
             rows.append(journal.write("error", instrument=ticker, error=f"earnings lookup: {exc}"))
     # Stocks that failed or were over the limit last time get another chance first,
@@ -203,7 +221,8 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
     todo = [t for t in dict.fromkeys([*retry, *reported]) if t not in held]
     now_list, skipped = todo[:cfg.max_analyses_per_run], todo[cfg.max_analyses_per_run:]
     rows.append(journal.write("earnings_scan", since=since.isoformat(), reported=reported,
-                              retrying=list(retry), analysing=now_list, skipped_over_limit=skipped))
+                              retrying=list(retry), analysing=now_list, skipped_over_limit=skipped,
+                              report_times=report_times))
 
     failed = []
     for ticker in now_list:
@@ -213,7 +232,8 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
             steps = ["open"] if target and not halted else (["halted"] if target else ["skip"])
             rows.append(journal.write("decision", instrument=ticker, ticker=ticker, trade_date=trade_date,
                                       rating=rating, target=target, current=0, actions=steps,
-                                      decision=decision[:4000]))
+                                      decision=decision[:4000],
+                                      report=getattr(analyze, "reports", {}).get(ticker)))
             if steps == ["open"]:
                 rows.append(_open(broker, cfg, journal, ticker, rating, target, nav, dry_run))
         except Exception as exc:

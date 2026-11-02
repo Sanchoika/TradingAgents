@@ -238,3 +238,64 @@ def test_position_cap_skips_new_trades(tmp_path):
     rows = run_once(b, fixed_analyzer("Buy"), cfg, Journal(tmp_path), str(p.last))
     assert len(b.our_open_trades()) == 2
     assert any(r["event"] == "skip" and "2 positions already open" in r["reason"] for r in rows)
+
+
+def test_short_pays_borrow_fee_longs_do_not(tmp_path):
+    p = Prices()
+    b = PaperBroker(tmp_path / "a.json", 100_000, spread_bps=0, bars=p, today=lambda: p.last,
+                    borrow_bps_per_year=3650)          # 36.5%/yr = 0.1% per day, easy to check
+    b.market_order("AAA", -10, "104.0", "Sell")
+    b.market_order("BBB", 10, "96.0", "Buy")
+    p.add(100, 101, 99, 100)
+    b.sync()
+    for _ in range(9):
+        p.add(100, 101, 99, 100)
+    b.sync()
+    for t in b.our_open_trades():
+        b.close_trade(t["id"])
+    p.add(100, 101, 99, 100)
+    recs = {r["instrument"]: r for r in b.sync()}
+    days = (date.fromisoformat(recs["AAA"]["closed"]) - date.fromisoformat(recs["AAA"]["opened"])).days
+    assert recs["AAA"]["financing"] == pytest.approx(-(10 * 100 * 0.001 * days), abs=0.01)
+    assert recs["BBB"]["financing"] == 0
+    assert b.nav() == pytest.approx(100_000 + recs["AAA"]["financing"], abs=0.01)
+
+
+def test_report_splits_long_and_short():
+    from tradingagents.demo.report import summarize
+
+    trades = ([{"id": str(i), "units": 5, "realizedPL": 10, "financing": 0} for i in range(4)]
+              + [{"id": str(i + 9), "units": -5, "realizedPL": -4, "financing": -1} for i in range(2)])
+    r = summarize(trades, {}, n_random=200)
+    assert r["by_side"]["long"] == {"trades": 4, "mean_pnl": 10.0, "win_rate": 1.0}
+    assert r["by_side"]["short"] == {"trades": 2, "mean_pnl": -5.0, "win_rate": 0.0}
+
+
+def test_earnings_session_hint_report_path_and_weekly_text(tmp_path):
+    from tradingagents.demo.notes import SIGN_IN_HINT, failure_text, run_summary, weekly_text
+    from tradingagents.demo.runner import _session
+
+    assert _session(pd.Timestamp("2026-10-13 11:00", tz="UTC")) == "before open"      # 07:00 ET
+    assert _session(pd.Timestamp("2026-10-13 20:30", tz="UTC")) == "after close"      # 16:30 ET
+    assert _session(pd.Timestamp("2026-10-13 15:00", tz="UTC")) == "during session"   # 11:00 ET
+
+    p = Prices()
+    cfg = DemoConfig(mode="earnings", universe=["A"], journal_dir=str(tmp_path))
+    analyze = lambda t, d: ("Hold", "x")  # noqa: E731
+    analyze.reports = {"A": "C:/reports/2026-10-13_A"}
+    rows = run_once(_broker(tmp_path, p), analyze, cfg, Journal(tmp_path), "2026-10-13",
+                    earnings=lambda t: [pd.Timestamp("2026-10-13 20:30", tz="UTC")],
+                    now=datetime(2026, 10, 13, 21, tzinfo=UTC))
+    scan = next(r for r in rows if r["event"] == "earnings_scan")
+    assert scan["report_times"]["A"].endswith("(after close)")
+    assert next(r for r in rows if r["event"] == "decision")["report"] == "C:/reports/2026-10-13_A"
+
+    err = [{"event": "run_start", "trade_date": "2026-10-13", "nav": 1}, {"event": "error", "instrument": "A",
+           "error": "ChatGPTAuthError: sign-in ended"}]
+    assert SIGN_IN_HINT in run_summary(err)
+    assert SIGN_IN_HINT in failure_text(RuntimeError("login chatgpt first"))
+    assert "no closed trades" in weekly_text({"trades": 0})
+    text = weekly_text({"trades": 10, "total_pnl": 120.0, "win_rate": 0.6, "mean_pnl": 12.0,
+                        "mean_pnl_ci95": [-3.0, 27.0], "p_random_as_good": 0.2,
+                        "by_side": {"long": {"trades": 6, "mean_pnl": 20.0, "win_rate": 0.7}}})
+    assert "10/150" in text and "random as good 20%" in text and "long 6" in text

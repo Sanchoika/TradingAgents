@@ -6,6 +6,10 @@ import random
 import statistics
 
 
+def _units(t: dict) -> float:
+    return float(t.get("units", t.get("initialUnits", 0)) or 0)
+
+
 def trade_pnl(trades: list[dict]) -> list[float]:
     """Realized P&L per closed trade, account currency, spread and financing included."""
     return [float(t.get("realizedPL", 0)) + float(t.get("financing", 0)) for t in trades]
@@ -43,8 +47,15 @@ def summarize(trades: list[dict], spread_cost: dict[str, float], n_random: int =
     for _ in range(n_random):
         rand_total = sum(g * rng.choice((1, -1)) - c for g, c in zip(gross, costs, strict=False))
         beat += rand_total >= total
+    by_side = {}
+    for name, sign in (("long", 1), ("short", -1)):
+        side = [p for t, p in zip(trades, pnl, strict=False) if _units(t) * sign > 0]
+        if side:
+            by_side[name] = {"trades": len(side), "mean_pnl": round(sum(side) / len(side), 2),
+                             "win_rate": round(sum(p > 0 for p in side) / len(side), 3)}
     return {
         "trades": n,
+        "by_side": by_side,
         "total_pnl": round(total, 2),
         "mean_pnl": round(total / n, 2),
         "win_rate": round(sum(p > 0 for p in pnl) / n, 3),

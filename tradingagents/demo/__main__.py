@@ -18,7 +18,7 @@ def _broker(cfg):
         from .paper import PaperBroker
 
         return PaperBroker(Path(cfg.journal_dir) / "paper_account.json", cfg.paper_start_cash,
-                           cfg.paper_spread_bps)
+                           cfg.paper_spread_bps, borrow_bps_per_year=cfg.paper_borrow_bps_per_year)
     from .oanda import OandaPractice, credentials_from_env
 
     token, account = credentials_from_env()
@@ -104,6 +104,18 @@ def cmd_dashboard(args, cfg) -> int:
     return 0
 
 
+def _weekly_scorecard(cfg) -> str:
+    from .notes import weekly_text
+    from .report import summarize
+
+    try:
+        closed = _broker(cfg).our_closed_trades()
+        spread = {str(t["id"]): t.get("spread_cost", 0) / 2 for t in closed}
+        return weekly_text(summarize(closed, spread, n_random=2000))
+    except Exception as exc:
+        return f"Weekly scorecard unavailable: {exc}"
+
+
 def _publish(rows, cfg, trade_date) -> None:
     """Note, dashboard and notification; a failure here is reported but never fails the run."""
     from .notes import notify, run_summary, write_run_note
@@ -120,7 +132,10 @@ def _publish(rows, cfg, trade_date) -> None:
             print(f"note not written: {exc}", file=sys.stderr)
     if cfg.notify_command:
         try:
-            code = notify(cfg.notify_command, run_summary(rows))
+            text = run_summary(rows)
+            if date.fromisoformat(trade_date).weekday() == 0:  # Mondays: add the scorecard
+                text += "\n" + _weekly_scorecard(cfg)
+            code = notify(cfg.notify_command, text)
             if code:
                 print(f"notify command exited with {code}", file=sys.stderr)
         except Exception as exc:

@@ -82,6 +82,17 @@ count toward the plan's usage limits.
 - A stock that fails to analyse, or is over `max_analyses_per_run`, is retried on the
   next runs for `retry_days` trading days.
 
+### What each run now also records
+
+- Earnings times with before-open / during / after-close, in the journal's `earnings_scan`.
+- The full TradingAgents report for each analysed stock in `reports/<date>_<ticker>/`
+  next to the journal, with its path in the `decision` row.
+- A `llm` field per run (which models rated), so a model change is visible.
+- Shorts pay `paper_borrow_bps_per_year` (default 300, 3% a year) for the days held.
+- On Mondays the Telegram digest ends with a one-line scorecard (trades, P&L, win rate,
+  95% interval, random baseline, long vs short). If the ChatGPT sign-in lapses the
+  digest says so and gives the command to fix it.
+
 ### Dashboard
 
 Every real run rewrites `dashboard.html` in the journal folder

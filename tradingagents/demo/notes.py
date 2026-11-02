@@ -6,6 +6,28 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+SIGN_IN_HINT = "ChatGPT sign-in has lapsed: run  tradingagents login chatgpt  on the PC"
+
+
+def auth_hint(error: str) -> str:
+    """A plain next step when an error means the ChatGPT plan sign-in ended."""
+    low = error.lower()
+    if "chatgptautherror" in low or "login chatgpt" in low or "refresh token" in low:
+        return SIGN_IN_HINT
+    return ""
+
+
+def weekly_text(result: dict) -> str:
+    """Monday add-on to the digest: how the whole test stands."""
+    n = result.get("trades", 0)
+    if not n:
+        return "Weekly scorecard: no closed trades yet."
+    sides = ", ".join(f"{k} {v['trades']} ({v['mean_pnl']:+,.0f} avg)" for k, v in result.get("by_side", {}).items())
+    lo, hi = result["mean_pnl_ci95"]
+    return (f"Weekly scorecard: {n}/150 closed, P&L {result['total_pnl']:+,.0f}, win {100 * result['win_rate']:.0f}%, "
+            f"avg/trade {result['mean_pnl']:+,.0f} (95% CI {lo:+,.0f} to {hi:+,.0f}), "
+            f"random as good {100 * result['p_random_as_good']:.0f}%" + (f"; {sides}" if sides else ""))
+
 
 def run_summary(rows: list[dict]) -> str:
     """A few lines a person can read on a phone."""
@@ -33,6 +55,9 @@ def run_summary(rows: list[dict]) -> str:
                          + (f" ({r['reason']})" if r.get("reason") else ""))
         elif ev == "error":
             lines.append(f"  ERROR {r.get('instrument', '')}: {r['error'][:200]}")
+            hint = auth_hint(r["error"])
+            if hint and hint not in lines:
+                lines.append(f"  {hint}")
     if len(lines) == 1:
         lines.append("Nothing to do today.")
     return "\n".join(lines)
@@ -77,4 +102,6 @@ def notify(command: str, text: str, timeout: int = 120) -> int:
 
 
 def failure_text(exc: BaseException) -> str:
-    return f"TradingAgents demo run FAILED: {type(exc).__name__}: {str(exc)[:300]}"
+    text = f"TradingAgents demo run FAILED: {type(exc).__name__}: {str(exc)[:300]}"
+    hint = auth_hint(f"{type(exc).__name__} {exc}")
+    return f"{text}\n{hint}" if hint else text

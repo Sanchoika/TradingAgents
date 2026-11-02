@@ -19,6 +19,7 @@ class DemoConfig:
     # "paper": built-in paper account on free Yahoo prices; "oanda": OANDA practice account.
     broker: str = "paper"
     paper_start_cash: float = 100_000.0
+    paper_borrow_bps_per_year: float = 300.0  # fee on short positions, % per year x 100
     paper_spread_bps: float = 5.0   # round-trip spread charged by the paper account, in basis points
     # "watchlist": rate every instrument each run. "earnings": rate only universe
     # stocks that reported earnings since the last run, hold hold_days trading days.
