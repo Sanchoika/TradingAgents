@@ -33,7 +33,9 @@ For each instrument in the config:
 3. Same direction as the open trade: keep it. Different: close it, then open the new side.
 4. New trades: stop at 2 x daily ATR(14); size so that hitting the stop loses 0.5% of
    the account. Skipped if the market is closed or the spread is above 10% of ATR.
-5. With `max_open_positions` set, new trades are skipped while that many are open.
+5. With `max_open_positions` set, new trades are skipped while that many are open;
+   `max_net_positions` also skips a trade that would leave longs and shorts that many apart
+   in its direction, and `no_short` lists symbols the account may not short.
 6. If the account falls 10% below its starting balance, no new trades are opened
    (closes still happen).
 
@@ -92,6 +94,12 @@ count toward the plan's usage limits.
 - On Mondays the Telegram digest ends with a one-line scorecard (trades, P&L, win rate,
   95% interval, random baseline, long vs short). If the ChatGPT sign-in lapses the
   digest says so and gives the command to fix it.
+
+- **Earnings dates are cross-checked** against SEC EDGAR 8-K item 2.02 filings: each
+  `earnings_scan` row has an `edgar_check` per reporter, and the digest flags any date
+  EDGAR does not confirm.
+- `report` also compares every closed trade with its sector fund (XLK, XLF, ...) in the
+  trade's own direction (`vs_sector_fund`), so a rising market is not mistaken for skill.
 
 ### Dashboard
 
@@ -173,5 +181,5 @@ trades with coin-flip directions did at least as well. An edge needs the confide
 interval above zero **and** a small `p_random_as_good` after ~150 trades.
 
 Known limits: LLM output varies run to run; Yahoo's free data can be late or missing;
-the paper account charges no financing or borrow fees and counts P&L in each symbol's
+the paper account charges a flat borrow fee on shorts (no hard-to-borrow refusals, no long financing) and counts P&L in each symbol's
 own currency; on OANDA the agents read the tracking ETF, not the CFD.

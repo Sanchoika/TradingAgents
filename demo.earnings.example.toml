@@ -8,6 +8,8 @@ hold_days = 5
 max_analyses_per_run = 5   # free-tier friendly; extra reporters are logged as skipped
 risk_pct = 0.5
 max_open_positions = 15  # new trades are skipped while 15 are open
+max_net_positions = 8    # ...and while longs and shorts are 8 apart in the same direction
+no_short = []            # symbols that cannot be shorted (hard to borrow)
 mild_size = 0.5         # Overweight/Underweight trade half the risk of Buy/Sell (0 = skip them)
 atr_mult = 2.0
 paper_spread_bps = 5

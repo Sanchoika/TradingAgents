@@ -1,5 +1,10 @@
 # Demo runner audit (2026-11-02)
 
+**Status 2026-11-02:** items 1, 4-10 and 12's config are built and merged (PRs 4-6; 6 adds the
+EDGAR date check and sector comparison). Open: 2 and 3 and 12 need Irakli to run a scheduler
+command or enter a Windows password; 11 (hermes-server) and Telegram status/pause are not built.
+
+
 Audit of the paper forward test as configured on the PC: earnings mode, paper
 account, ChatGPT plan, weekdays 08:00 New York, Telegram digest, Obsidian notes.
 Ordered by how much each item threatens a trustworthy result.

@@ -48,6 +48,24 @@ def fixed_analyzer(rating: str) -> Analyzer:
 EarningsTimes = Callable[[str], list]
 
 
+def edgar_earnings(ticker: str) -> list:
+    from tradingagents.dataflows.vendors.sec_earnings import earnings_release_times
+
+    return earnings_release_times(ticker)
+
+
+def _edgar_check(ticker: str, yahoo_ts: pd.Timestamp, edgar) -> str:
+    """Whether SEC EDGAR has an earnings 8-K within 36 hours of Yahoo's report time."""
+    try:
+        times = edgar(ticker)
+    except Exception:
+        return "EDGAR unavailable"
+    if not times:
+        return "not an EDGAR filer"
+    near = any(abs(pd.Timestamp(t) - yahoo_ts) <= pd.Timedelta(hours=36) for t in times)
+    return "confirmed by EDGAR" if near else "NOT confirmed by EDGAR"
+
+
 def yahoo_earnings(ticker: str) -> list:
     from tradingagents.dataflows.vendors.yahoo.earnings import earnings_times
 
@@ -56,7 +74,7 @@ def yahoo_earnings(ticker: str) -> list:
 
 def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
              trade_date: str, dry_run: bool = False, earnings: EarningsTimes | None = None,
-             now: datetime | None = None) -> list[dict]:
+             now: datetime | None = None, edgar: EarningsTimes | None = None) -> list[dict]:
     """One pass of the configured mode. Returns the journal rows it wrote."""
     rows = []
     if hasattr(broker, "sync") and not dry_run:  # paper account: settle queued fills and stops
@@ -85,7 +103,8 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
                               benchmark_pct=bench_pct))
     if cfg.mode == "earnings":
         rows += _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halted,
-                               earnings or yahoo_earnings, now or datetime.now(UTC))
+                               earnings or yahoo_earnings, now or datetime.now(UTC),
+                               edgar or edgar_earnings)
         return rows
 
     for instrument, ticker in cfg.instruments.items():
@@ -150,6 +169,13 @@ def _open(broker, cfg, journal, instrument, rating, direction, nav, dry_run):
     if cfg.max_open_positions and len(broker.our_open_trades()) >= cfg.max_open_positions:
         return journal.write("skip", instrument=instrument, rating=rating,
                              reason=f"{cfg.max_open_positions} positions already open")
+    if direction < 0 and instrument in cfg.no_short:
+        return journal.write("skip", instrument=instrument, rating=rating, reason="on the no-short list")
+    if cfg.max_net_positions:
+        net = sum(1 if float(t["currentUnits"]) > 0 else -1 for t in broker.our_open_trades())
+        if net * direction >= cfg.max_net_positions:
+            return journal.write("skip", instrument=instrument, rating=rating,
+                                 reason=f"net exposure already {net:+d} positions")
     spec = broker.instrument(instrument)
     quote = broker.quote(instrument)
     if not quote.tradeable:
@@ -187,7 +213,7 @@ def _session(ts: pd.Timestamp) -> str:
     return "before open" if minutes < 570 else ("after close" if minutes >= 960 else "during session")
 
 
-def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halted, earnings, now):
+def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halted, earnings, now, edgar):
     """Close trades held hold_days, then rate the universe stocks that just reported."""
     rows = []
     for t in broker.our_open_trades():
@@ -204,13 +230,14 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
         else pd.Timestamp(now - timedelta(days=1))
     now_ts = pd.Timestamp(now)
     held = {t["instrument"] for t in broker.our_open_trades()}
-    reported, report_times = [], {}
+    reported, report_times, edgar_check = [], {}, {}
     for ticker in cfg.universe:
         try:
             hits = [pd.Timestamp(ts) for ts in earnings(ticker) if since < pd.Timestamp(ts) <= now_ts]
             if hits:
                 reported.append(ticker)
                 report_times[ticker] = f"{hits[0].isoformat()} ({_session(hits[0])})"
+                edgar_check[ticker] = _edgar_check(ticker, hits[0], edgar)
         except Exception as exc:
             rows.append(journal.write("error", instrument=ticker, error=f"earnings lookup: {exc}"))
     # Stocks that failed or were over the limit last time get another chance first,
@@ -222,7 +249,7 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
     now_list, skipped = todo[:cfg.max_analyses_per_run], todo[cfg.max_analyses_per_run:]
     rows.append(journal.write("earnings_scan", since=since.isoformat(), reported=reported,
                               retrying=list(retry), analysing=now_list, skipped_over_limit=skipped,
-                              report_times=report_times))
+                              report_times=report_times, edgar_check=edgar_check))
 
     failed = []
     for ticker in now_list:

@@ -173,6 +173,13 @@ def cmd_report(args, cfg) -> int:
     spread.update({str(t["id"]): t["spread_cost"] / 2 for t in closed if "spread_cost" in t})
     result = summarize(closed, spread)
     result["open_trades"] = len(broker.our_open_trades())
+    if hasattr(broker, "bars") and closed:
+        from .sectors import excess_vs_sector
+
+        try:
+            result["vs_sector_fund"] = excess_vs_sector(closed, broker.bars)
+        except Exception as exc:
+            result["vs_sector_fund"] = {"error": str(exc)}
     print(json.dumps(result, indent=2))
     if cfg.notes_dir:
         from .notes import write_scorecard

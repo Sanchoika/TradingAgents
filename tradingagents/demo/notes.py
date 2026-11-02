@@ -42,6 +42,9 @@ def run_summary(rows: list[dict]) -> str:
     for r in rows:
         ev = r["event"]
         if ev == "earnings_scan":
+            odd = [t for t, v in r.get("edgar_check", {}).items() if v == "NOT confirmed by EDGAR"]
+            if odd:
+                lines.append(f"CHECK: earnings date not confirmed by SEC EDGAR for {', '.join(odd)}")
             lines.append(f"Reported: {', '.join(r['reported']) or 'none'}"
                          + (f"; skipped (limit): {', '.join(r['skipped_over_limit'])}"
                             if r["skipped_over_limit"] else ""))

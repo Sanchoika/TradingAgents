@@ -315,3 +315,77 @@ def test_watchdog_finds_missing_weekday_runs():
     assert missing_run(ran + [{"event": "run_start", "trade_date": "2026-11-03"}], tue_9am) is None
     assert missing_run(ran, sun) == "2026-11-06"                # weekend: the last weekday is Friday
     assert missing_run([], tue_9am) == "2026-11-03"
+
+
+def test_edgar_second_source_and_summary_flag(tmp_path):
+    from tradingagents.demo.notes import run_summary
+
+    p = Prices()
+    cfg = DemoConfig(mode="earnings", universe=["A", "B", "C"], journal_dir=str(tmp_path))
+    yahoo = pd.Timestamp("2026-10-13 20:30", tz="UTC")
+    edgar = {"A": [pd.Timestamp("2026-10-13 20:35", tz="UTC")],        # same evening: confirmed
+             "B": [pd.Timestamp("2026-07-20 20:00", tz="UTC")],        # months apart: not confirmed
+             "C": []}                                                  # not a US filer
+    rows = run_once(_broker(tmp_path, p), lambda t, d: ("Hold", ""), cfg, Journal(tmp_path), "2026-10-13",
+                    earnings=lambda t: [yahoo], now=datetime(2026, 10, 13, 21, tzinfo=UTC), edgar=edgar.get)
+    scan = next(r for r in rows if r["event"] == "earnings_scan")
+    assert scan["edgar_check"] == {"A": "confirmed by EDGAR", "B": "NOT confirmed by EDGAR",
+                                   "C": "not an EDGAR filer"}
+    assert "CHECK: earnings date not confirmed by SEC EDGAR for B" in run_summary(rows)
+
+
+def test_edgar_release_times_reads_item_202_8ks(monkeypatch):
+    from tradingagents.dataflows.vendors import sec_earnings
+
+    monkeypatch.setattr(sec_earnings, "cik_for", lambda t: "0000000001" if t == "AAA" else None)
+    monkeypatch.setattr(sec_earnings, "_fetch_json", lambda url: {"filings": {"recent": {
+        "form": ["8-K", "10-Q", "8-K", "8-K"],
+        "items": ["2.02,9.01", "", "5.02", "2.02"],
+        "acceptanceDateTime": ["2026-10-20T20:05:00.000Z", "2026-10-21T10:00:00.000Z",
+                               "2026-10-22T10:00:00.000Z", "2026-07-21T20:10:00.000Z"]}}})
+    times = sec_earnings.earnings_release_times("AAA")
+    assert [t.isoformat()[:16] for t in times] == ["2026-10-20T20:05", "2026-07-21T20:10"]
+    assert sec_earnings.earnings_release_times("ZZZ") == []
+
+
+def test_excess_return_over_sector_fund_in_trade_direction():
+    from tradingagents.demo.sectors import excess_vs_sector
+
+    def bars(sym, as_of):
+        days = pd.bdate_range("2026-10-01", periods=10)
+        opens = [100.0 + i for i in range(10)]                       # sector fund rises 1 a day
+        return pd.DataFrame({"Date": days, "Open": opens})
+
+    long_win = {"instrument": "NVDA", "units": 5, "price": 100.0, "close_price": 110.0,
+                "opened": "2026-10-02", "closed": "2026-10-08"}      # stock +10%, fund +~5.9%
+    short_loss = {"instrument": "NVDA", "units": -5, "price": 100.0, "close_price": 110.0,
+                  "opened": "2026-10-02", "closed": "2026-10-08"}    # short loses 10%, fund fell for the short
+    unknown = {"instrument": "ZZZZ", "units": 1, "price": 1.0, "close_price": 1.0,
+               "opened": "2026-10-02", "closed": "2026-10-08"}
+    r = excess_vs_sector([long_win, short_loss, unknown], bars)
+    assert r["trades"] == 2 and r["skipped"] == 1
+    fund = 100 * (107 / 101 - 1)
+    assert r["mean_excess_pct"] == pytest.approx(((10 - fund) + (-10 + fund)) / 2, abs=0.01)
+    assert r["share_beating_sector"] == 0.5
+
+
+def test_net_exposure_cap_and_no_short_list(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(instruments=["A", "B", "C", "D"], max_net_positions=2, no_short=["Z"],
+                     journal_dir=str(tmp_path))
+    rows = run_once(b, fixed_analyzer("Buy"), cfg, Journal(tmp_path), str(p.last))
+    assert len(b.our_open_trades()) == 2                      # third and fourth long would make net +3
+    assert sum("net exposure already +2" in r.get("reason", "") for r in rows) == 2
+    short_cfg = DemoConfig(instruments=["Z", "A"], no_short=["Z"], journal_dir=str(tmp_path / "s"))
+    b2 = _broker(tmp_path / "s", p)
+    rows = run_once(b2, fixed_analyzer("Sell"), short_cfg, Journal(tmp_path / "s"), str(p.last))
+    assert [t["instrument"] for t in b2.our_open_trades()] == ["A"]
+    assert any(r.get("reason") == "on the no-short list" for r in rows)
+    # An opposite-side trade is still allowed when the book is already net long.
+    cfg2 = DemoConfig(instruments=["A", "B"], max_net_positions=2, journal_dir=str(tmp_path / "m"))
+    b3 = _broker(tmp_path / "m", p)
+    run_once(b3, fixed_analyzer("Buy"), cfg2, Journal(tmp_path / "m"), str(p.last))
+    run_once(b3, fixed_analyzer("Sell"), DemoConfig(instruments=["C"], max_net_positions=2,
+             journal_dir=str(tmp_path / "m")), Journal(tmp_path / "m"), str(p.last))
+    assert len(b3.our_open_trades()) == 3
