@@ -103,12 +103,26 @@ count toward the plan's usage limits.
 
 ### Dashboard
 
-Every real run rewrites `dashboard.html` in the journal folder
-(`~/.tradingagents/demo/` by default): account vs SPY, closed trades toward 150, win
-rate, how often random did as well, ratings given, open and closed positions,
-results by rating, the latest analyses in full, and recent runs with errors and
-missed days. It is one offline file; double-click to open it, or run
-`python -m tradingagents.demo --config demo.toml dashboard --open`.
+Every real run rebuilds a read-only dashboard from the saved files (journal,
+paper account, state): `dashboard.html` in the journal folder (double-click it) and a
+`site/` folder next to it for hosting. Sections: Overview, Positions (open, pending
+entries, requested exits, closed trades), AI decisions (every analysis, Hold, skip
+and failure, filterable, with the full saved report), Performance (equity and the
+runner's drawdown, provisional results, costs, sector and per-rating comparisons) and
+Activity & status (journal feed, data sources, scheduled tasks as read from Task
+Scheduler). Dark by default, works on a phone.
+
+Opening or refreshing the page never runs an analysis, settles an order or writes
+to the account. Building it reads the files; it also fetches last closes for open
+positions (skip with `--no-prices`) and reads Task Scheduler.
+
+```powershell
+python -m tradingagents.demo --config demo.toml dashboard --open   # rebuild and open
+python -m tradingagents.demo --config demo.toml dashboard --sync   # rebuild and copy to the host
+```
+
+`dashboard_sync_command` (optional) runs after each rebuild to copy `site/` to a
+private web host; see `docs/DASHBOARD-ACCESS.md`.
 
 ## Checks first (no LLM calls)
 
