@@ -18,7 +18,7 @@ def _broker(cfg):
         from .paper import PaperBroker
 
         return PaperBroker(Path(cfg.journal_dir) / "paper_account.json", cfg.paper_start_cash,
-                           cfg.paper_spread_bps)
+                           cfg.paper_spread_bps, borrow_bps_per_year=cfg.paper_borrow_bps_per_year)
     from .oanda import OandaPractice, credentials_from_env
 
     token, account = credentials_from_env()
@@ -104,6 +104,18 @@ def cmd_dashboard(args, cfg) -> int:
     return 0
 
 
+def _weekly_scorecard(cfg) -> str:
+    from .notes import weekly_text
+    from .report import summarize
+
+    try:
+        closed = _broker(cfg).our_closed_trades()
+        spread = {str(t["id"]): t.get("spread_cost", 0) / 2 for t in closed}
+        return weekly_text(summarize(closed, spread, n_random=2000))
+    except Exception as exc:
+        return f"Weekly scorecard unavailable: {exc}"
+
+
 def _publish(rows, cfg, trade_date) -> None:
     """Note, dashboard and notification; a failure here is reported but never fails the run."""
     from .notes import notify, run_summary, write_run_note
@@ -120,11 +132,31 @@ def _publish(rows, cfg, trade_date) -> None:
             print(f"note not written: {exc}", file=sys.stderr)
     if cfg.notify_command:
         try:
-            code = notify(cfg.notify_command, run_summary(rows))
+            text = run_summary(rows)
+            if date.fromisoformat(trade_date).weekday() == 0:  # Mondays: add the scorecard
+                text += "\n" + _weekly_scorecard(cfg)
+            code = notify(cfg.notify_command, text)
             if code:
                 print(f"notify command exited with {code}", file=sys.stderr)
         except Exception as exc:
             print(f"notify failed: {exc}", file=sys.stderr)
+
+
+def cmd_watchdog(args, cfg) -> int:
+    """Alert (through notify_command) when a weekday's scheduled run left no journal entry."""
+    from datetime import datetime
+
+    from .notes import missing_run, notify
+
+    day = missing_run(Journal(cfg.journal_dir).events(), datetime.now().astimezone())
+    if day is None:
+        print("ok: the latest scheduled run is in the journal")
+        return 0
+    text = f"TradingAgents demo: NO RUN recorded for {day}. Is the PC on and logged in? See demo.log."
+    print(text)
+    if cfg.notify_command:
+        notify(cfg.notify_command, text)
+    return 1
 
 
 def cmd_report(args, cfg) -> int:
@@ -162,6 +194,7 @@ def main(argv=None) -> int:
     r.add_argument("--fixed-rating", choices=["Buy", "Overweight", "Hold", "Underweight", "Sell"],
                    help="skip the LLM and use this rating (free plumbing test)")
     sub.add_parser("report", help="score closed demo trades vs a random baseline")
+    sub.add_parser("watchdog", help="alert if a weekday's scheduled run is missing from the journal")
     d = sub.add_parser("dashboard", help="write dashboard.html from the journal (offline)")
     d.add_argument("--open", action="store_true", help="open it in the browser")
     args = p.parse_args(argv)
@@ -170,7 +203,7 @@ def main(argv=None) -> int:
     try:
         cfg = load_config(args.config)
         return {"check": cmd_check, "run": cmd_run, "report": cmd_report,
-                "dashboard": cmd_dashboard}[args.cmd](args, cfg)
+                "dashboard": cmd_dashboard, "watchdog": cmd_watchdog}[args.cmd](args, cfg)
     except (OandaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

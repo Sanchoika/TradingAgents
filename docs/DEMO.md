@@ -82,6 +82,17 @@ count toward the plan's usage limits.
 - A stock that fails to analyse, or is over `max_analyses_per_run`, is retried on the
   next runs for `retry_days` trading days.
 
+### What each run now also records
+
+- Earnings times with before-open / during / after-close, in the journal's `earnings_scan`.
+- The full TradingAgents report for each analysed stock in `reports/<date>_<ticker>/`
+  next to the journal, with its path in the `decision` row.
+- A `llm` field per run (which models rated), so a model change is visible.
+- Shorts pay `paper_borrow_bps_per_year` (default 300, 3% a year) for the days held.
+- On Mondays the Telegram digest ends with a one-line scorecard (trades, P&L, win rate,
+  95% interval, random baseline, long vs short). If the ChatGPT sign-in lapses the
+  digest says so and gives the command to fix it.
+
 ### Dashboard
 
 Every real run rewrites `dashboard.html` in the journal folder
@@ -133,6 +144,22 @@ schtasks /Create /TN TradingAgentsDemo /SC WEEKLY /D MON /ST 16:00 ^
 ```
 
 Or on a Linux server with cron: `0 12 * * 1 cd ~/TradingAgents && .venv/bin/python -m tradingagents.demo --config demo.toml run >> demo.log 2>&1` (UTC).
+
+## Keeping it running
+
+- **Daily watchdog:** `python -m tradingagents.demo --config demo.toml watchdog` alerts
+  (through `notify_command`) when a weekday's run has no journal entry. Schedule it an
+  hour and a half after the run:
+  `schtasks /Create /TN TradingAgentsWatchdog /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 09:30 /TR "cmd /c cd /d C:\bbt\TradingAgents && .venv\Scripts\python -m tradingagents.demo --config demo.toml watchdog >> watchdog.log 2>&1" /F`
+  It cannot notice a day the PC was off at both times, but the Monday scorecard and the
+  missed-run line in the next digest still show the gap.
+- **Run while logged out:** Task Scheduler's default is "interactive only". To run
+  whether or not you are logged on, open Task Scheduler, double-click the task, choose
+  "Run whether user is logged on or not" and enter your Windows password there (the PC
+  still has to be on). Or add `/RU <you> /RP` to the `schtasks /Create` command, which
+  asks for the password at the prompt.
+- **Second test:** `demo.watchlist.example.toml` runs a weekly watchlist (index/gold ETFs,
+  BTC) in its own journal and paper account. Copy it to `demo-watchlist.toml`.
 
 ## Reading the results
 

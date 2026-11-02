@@ -187,6 +187,10 @@ def render(data: dict, title: str = "TradingAgents paper test") -> str:
             f'<tr><td><b>{_e(t["instrument"])}</b></td><td>{_e(data["rating_of_trade"].get(str(t["id"]), "?"))}</td>'
             f'<td>{_e(t["opened"])}</td><td>{_e(t["closed"])}</td><td>{_e(t["reason"])}</td>'
             f'<td class="{cls(pl)}">{_money(pl, True)}</td></tr>')
+    side_rows = [
+        f'<tr><td>{_e(name.title())}</td><td>{v["trades"]}</td><td>{100 * v["win_rate"]:.0f}%</td>'
+        f'<td class="{cls(v["mean_pnl"])}">{_money(v["mean_pnl"], True)}</td></tr>'
+        for name, v in s.get("by_side", {}).items()]
     rating_rows = [
         f'<tr><td>{_e(r)}</td><td>{b["n"]}</td><td>{100 * b["wins"] / b["n"]:.0f}%</td>'
         f'<td class="{cls(b["pnl"])}">{_money(b["pnl"], True)}</td></tr>'
@@ -255,7 +259,8 @@ background:var(--pill);padding:12px;border-radius:8px;max-height:360px;overflow:
 <div class="card"><h2>Ratings given</h2>{_rating_bars(data["rating_counts"])}</div></div>
 <div class="card section"><h2>Open positions</h2>{table(["Stock", "Side", "Units", "Entry", "Stop", "Since", "Status"], open_rows, "No open positions.")}</div>
 <div class="two"><div class="card"><h2>Closed trades</h2>{table(["Stock", "Rating", "Opened", "Closed", "Exit", "P&amp;L"], closed_rows, "No closed trades yet.")}</div>
-<div class="card"><h2>By rating</h2>{table(["Rating", "Trades", "Win", "P&amp;L"], rating_rows, "Fills in as trades close.")}</div></div>
+<div class="card"><h2>By rating</h2>{table(["Rating", "Trades", "Win", "P&amp;L"], rating_rows, "Fills in as trades close.")}
+<h2 style="margin-top:18px">Long vs short</h2>{table(["Side", "Trades", "Win", "Avg P&amp;L"], side_rows, "Fills in as trades close.")}</div></div>
 <div class="two"><div class="card"><h2>Latest analyses</h2>{decisions}</div>
 <div class="card"><h2>Recent runs</h2>{table(["Date", "Reported", "Rated", "Orders", "Errors", "Missed"], run_rows, "No runs yet.")}</div></div>
 <footer>Paper money only. Generated {datetime.now():%Y-%m-%d %H:%M} from the local journal. Judge after about {TARGET_TRADES} closed trades.</footer>

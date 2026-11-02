@@ -9,7 +9,8 @@ max_open_positions = 15  # new trades are skipped while 15 are open
 mild_size = 0.5         # Overweight/Underweight trade half the risk of Buy/Sell (0 = skip them)          # % of account lost if a stop is hit
 atr_mult = 2.0          # stop distance = 2 x daily ATR(14)
 max_drawdown_pct = 10.0 # stop opening new trades after a 10% fall from the starting balance
-paper_spread_bps = 5    # spread the paper account charges per round trip (0.05%)
+paper_spread_bps = 5
+paper_borrow_bps_per_year = 300   # short-selling fee, 3% a year (0 to turn off)
 
 # Any Yahoo symbol: stocks, ETFs, crypto (BTC-USD), forex (EURUSD=X; P&L counted in the
 # quote currency, so keep to xxxUSD pairs). TradingAgents' analysts know stocks best.

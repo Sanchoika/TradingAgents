@@ -19,6 +19,7 @@ class DemoConfig:
     # "paper": built-in paper account on free Yahoo prices; "oanda": OANDA practice account.
     broker: str = "paper"
     paper_start_cash: float = 100_000.0
+    paper_borrow_bps_per_year: float = 300.0  # fee on short positions, % per year x 100
     paper_spread_bps: float = 5.0   # round-trip spread charged by the paper account, in basis points
     # "watchlist": rate every instrument each run. "earnings": rate only universe
     # stocks that reported earnings since the last run, hold hold_days trading days.
@@ -48,6 +49,7 @@ class DemoConfig:
     llm: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        self.journal_dir = str(Path(self.journal_dir).expanduser())
         if not 0 < self.risk_pct <= 2:
             raise ValueError("risk_pct must be in (0, 2]; this is a demo test, keep risk small")
         if isinstance(self.instruments, list):

@@ -6,7 +6,7 @@ filled at once: a new order or a close is queued and filled at the **next
 daily open** after the order date, plus half the configured spread. Stops are
 checked against each later day's high/low; a gap through the stop fills at
 that day's open. P&L is in the instrument's own currency (USD for US stocks,
-crypto -USD pairs and xxxUSD forex). No financing or borrow fees are charged.
+crypto -USD pairs and xxxUSD forex). Shorts pay a borrow fee (borrow_bps_per_year) for the days held; longs pay no financing.
 """
 
 from __future__ import annotations
@@ -32,9 +32,11 @@ def yahoo_bars(symbol: str, as_of_date: str) -> pd.DataFrame:
 
 class PaperBroker:
     def __init__(self, path: str | Path, start_cash: float = 100_000.0, spread_bps: float = 5.0,
-                 bars: Bars = yahoo_bars, today: Callable[[], date] = date.today):
+                 bars: Bars = yahoo_bars, today: Callable[[], date] = date.today,
+                 borrow_bps_per_year: float = 0.0):
         self.path = Path(path)
         self.spread_bps = spread_bps
+        self.borrow_bps_per_year = borrow_bps_per_year
         self.bars = bars
         self.today = today
         self.account_id = "paper"
@@ -149,10 +151,14 @@ class PaperBroker:
         side = 1 if t["units"] > 0 else -1
         px = mid - side * self._half(mid)
         pl = t["units"] * (px - t["price"])
-        self.s["cash"] += pl
+        # Short borrow fee on the entry value for the calendar days held; longs pay none.
+        days = max((date.fromisoformat(on) - date.fromisoformat(t["filled_on"])).days, 0)
+        borrow = (abs(t["units"]) * t["price"] * self.borrow_bps_per_year / 1e4 * days / 365
+                  if t["units"] < 0 else 0.0)
+        self.s["cash"] += pl - borrow
         self.s["open"].remove(t)
         rec = {"id": t["id"], "instrument": t["instrument"], "units": t["units"], "price": t["price"],
-               "close_price": px, "realizedPL": round(pl, 2), "financing": 0.0, "opened": t["filled_on"],
+               "close_price": px, "realizedPL": round(pl, 2), "financing": round(-borrow, 2), "opened": t["filled_on"],
                "closed": on, "reason": reason,
                "spread_cost": round(abs(t["units"]) * (self._half(t["price"]) + self._half(mid)), 2),
                "recorded": datetime.now(UTC).isoformat(timespec="seconds")}
