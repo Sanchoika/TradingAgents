@@ -39,12 +39,6 @@ def _sender(cfg):
     return send
 
 
-def _news(symbols):
-    from tradingagents.dataflows.vendors.yahoo.news import get_recent_articles_yfinance
-
-    return get_recent_articles_yfinance(symbols, limit=10)
-
-
 def cmd_check(args, cfg) -> int:
     """Read-only: instrument details, account currency and hedging, quote, open Brent trades."""
     c = _client(cfg)
@@ -122,7 +116,7 @@ def cmd_run(args, cfg) -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     try:
-        mon = Monitor(cfg, _client(cfg), store, _sender(cfg), news=_news)
+        mon = Monitor(cfg, _client(cfg), store, _sender(cfg))
         print(f"Brent monitor {RULES_VERSION} cfg {cfg.config_hash()} journal {store.dir}. "
               "Alerts only, no orders. Ctrl+C to stop.", flush=True)
         mon.startup()

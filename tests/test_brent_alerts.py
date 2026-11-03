@@ -577,3 +577,16 @@ def test_report_and_page(tmp_path):
     page = write_page(mon.st, store.events(), False, tmp_path / "p" / "index.html")
     assert "Brent alerts" in page.read_text() and "<script" not in page.read_text()
     assert any("armed setups" in line for line in status_lines(mon.st, False))
+
+
+def test_cmd_run_builds_the_monitor(tmp_path, monkeypatch):
+    """The real `run` entry point wires the Monitor (regression: stale keyword crashed it)."""
+    from tradingagents.brent import __main__ as cli
+
+    cfg = BrentConfig(journal_dir=str(tmp_path))
+    monkeypatch.setattr(cli, "_client", lambda c: FakeClient(lambda: datetime.now(UTC)))
+    monkeypatch.setattr(cli, "_sender", lambda c: (lambda text: (True, 0.1)))
+    ran = []
+    monkeypatch.setattr(Monitor, "startup", lambda self: None)
+    monkeypatch.setattr(Monitor, "run", lambda self, stop, on_tick: ran.append(True))
+    assert cli.cmd_run(None, cfg) == 0 and ran == [True]
