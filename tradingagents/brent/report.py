@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import html
+import json
 import random
 import re
 from collections import Counter
@@ -55,25 +56,44 @@ def summarize(events: list[dict]) -> dict:
     direction = {f"+{m}min": {"n": len(v), "mean_move_atr": round(mean(v), 3),
                               "share_in_alert_direction": round(sum(x > 0 for x in v) / len(v), 2)}
                  for m, v in sorted(marks.items(), key=lambda kv: int(kv[0]))}
-    exits = [e for e in events if e["event"] == "paper_exit"]
-    rs = [e["net_r"] for e in exits]
-    by_kind: dict[str, list[float]] = {}
-    for e in exits:
-        s = signals.get(e["id"], {}).get("setup", {})
-        by_kind.setdefault(f"{s.get('kind', '?')} {s.get('direction', '?')}", []).append(e["net_r"])
-    paper = {
-        "fills": sum(1 for e in events if e["event"] == "paper_fill"),
-        "missed": sum(1 for e in events if e["event"] == "paper_missed"),
-        "closed": len(rs),
-        "net_r_total": round(sum(rs), 2) if rs else 0.0,
-        "net_r_mean": round(mean(rs), 3) if rs else None,
-        "net_r_mean_ci95": _ci(rs),
-        "win_rate": round(sum(r > 0 for r in rs) / len(rs), 2) if rs else None,
-        "exit_reasons": dict(Counter(e["reason"] for e in exits)),
-        "by_setup": {k: {"n": len(v), "mean_r": round(mean(v), 3)} for k, v in by_kind.items()},
-    }
+    def paper_stats(ids: set) -> dict:
+        exits = [e for e in events if e["event"] == "paper_exit" and e["id"] in ids]
+        rs = [e["net_r"] for e in exits]
+        by_kind: dict[str, list[float]] = {}
+        by_label: dict[str, list[float]] = {}
+        for e in exits:
+            sg = signals.get(e["id"], {})
+            s = sg.get("setup", {})
+            by_kind.setdefault(f"{s.get('kind', '?')} {s.get('direction', '?')}", []).append(e["net_r"])
+            lab = (sg.get("label") or "n/a") + ("" if sg.get("telegram") or sg.get("arm") != "combined"
+                                                else " (logged, not sent)")
+            by_label.setdefault(lab, []).append(e["net_r"])
+        return {
+            "signals": len(ids),
+            "fills": sum(1 for e in events if e["event"] == "paper_fill" and e["id"] in ids),
+            "missed": sum(1 for e in events if e["event"] == "paper_missed" and e["id"] in ids),
+            "closed": len(rs),
+            "net_r_total": round(sum(rs), 2) if rs else 0.0,
+            "net_r_mean": round(mean(rs), 3) if rs else None,
+            "net_r_mean_ci95": _ci(rs),
+            "win_rate": round(sum(r > 0 for r in rs) / len(rs), 2) if rs else None,
+            "exit_reasons": dict(Counter(e["reason"] for e in exits)),
+            "by_setup": {k: {"n": len(v), "mean_r": round(mean(v), 3)} for k, v in by_kind.items()},
+            "by_label": {k: {"n": len(v), "mean_r": round(mean(v), 3), "ci95": _ci(v)}
+                         for k, v in by_label.items()},
+        }
+
+    combined = {i for i, sg in signals.items() if sg.get("arm", "combined") == "combined"}
+    shadow = {i for i, sg in signals.items() if sg.get("arm") == "chart-only"}
+    paper = paper_stats(combined)
+    cands = [e for e in events if e["event"] == "candidate"]
+    paper["candidates_by_policy_row"] = dict(Counter(f"{e['action']}: {e['row']}" for e in cands))
+    chart_only = paper_stats(shadow)
     manual = [e for e in events if e["event"] == "manual"]
+    op["signals_issued"] = len(combined)
+    op["chart_only_signals"] = len(shadow)
     return {"operational": op, "directional": direction, "paper_hypothetical": paper,
+            "chart_only_comparison": chart_only,
             "manual_confirmed": {"records": len(manual),
                                  "entered": sum(1 for e in manual if e.get("entered")),
                                  "results": [{k: e.get(k) for k in ("id", "entered", "price", "units",
@@ -183,4 +203,99 @@ def write_scorecard(result: dict, notes_dir: str | Path) -> Path:
                          "\n".join(f"| {k} | {v} |" for k, v in sec.items()) + "\n")
     parts.append(result["note"] + "\n")
     path.write_text("\n".join(parts), encoding="utf-8")
+    return path
+
+
+def _svg_chart(sig: dict, h1: list[dict], now: datetime) -> str:
+    """H1 candles with the alert's levels. Numbers come from the candles and the signal."""
+    bars = h1[-30:]
+    s, p = sig["setup"], sig["plan"]
+    ch = (sig.get("assessment") or {}).get("chart", {})
+    lines = [("entry zone low", s["zone_lo"], "#3b6fd8"), ("entry zone high", s["zone_hi"], "#3b6fd8"),
+             ("suggested stop", s["stop"], "#c0392b"), ("target 1R", p["t1"], "#2e8b57"),
+             ("target 2R", p["t2"], "#2e8b57"), (f"prior-day {s['level_name']}", s["level"], "#888")]
+    nl = ch.get("next_level")
+    if nl:
+        lines.append((nl["name"], nl["price"], "#888"))
+    prices = [v for _, v, _ in lines] + [b["h"] for b in bars] + [b["l"] for b in bars]
+    if not prices:
+        return "<p>No candles available.</p>"
+    lo, hi = min(prices), max(prices)
+    pad = (hi - lo) * 0.05 or 0.5
+    lo, hi = lo - pad, hi + pad
+    W, H, left, right, y0, y1 = 760, 380, 50, 560, 30, 340
+
+    def Y(v):
+        return y1 - (v - lo) / (hi - lo) * (y1 - y0)
+
+    step = (right - left) / max(len(bars), 1)
+    out = [f"<svg viewBox='0 0 {W} {H}' role='img' aria-label='H1 candles and alert levels' "
+           "style='width:100%;height:auto;font:11px system-ui'>",
+           f"<rect x='{left}' y='{Y(s['zone_hi']):.1f}' width='{right - left}' "
+           f"height='{max(Y(s['zone_lo']) - Y(s['zone_hi']), 1):.1f}' fill='#3b6fd8' fill-opacity='0.15'/>"]
+    for name, v, col in lines:
+        out.append(f"<line x1='{left}' x2='{right}' y1='{Y(v):.1f}' y2='{Y(v):.1f}' stroke='{col}' "
+                   "stroke-dasharray='4 3'/>")
+        out.append(f"<text x='{right + 6}' y='{Y(v) + 4:.1f}' fill='currentColor'>"
+                   f"{html.escape(name)} {v:.2f}</text>")
+    for i, b in enumerate(bars):
+        x = left + step * (i + 0.5)
+        forming = not b.get("complete", True)
+        top, bot = Y(max(b["o"], b["c"])), Y(min(b["o"], b["c"]))
+        dash = " stroke-dasharray='2 2'" if forming else ""
+        out.append(f"<line x1='{x:.1f}' x2='{x:.1f}' y1='{Y(b['h']):.1f}' y2='{Y(b['l']):.1f}' "
+                   f"stroke='currentColor'{dash}/>")
+        fill = "currentColor" if b["c"] >= b["o"] else "none"
+        out.append(f"<rect x='{x - step * 0.3:.1f}' y='{top:.1f}' width='{step * 0.6:.1f}' "
+                   f"height='{max(bot - top, 1):.1f}' fill='{fill}' fill-opacity='0.6' "
+                   f"stroke='currentColor'{dash}><title>{b['time']:%Y-%m-%d %H:%M} UTC O {b['o']:.2f} "
+                   f"H {b['h']:.2f} L {b['l']:.2f} C {b['c']:.2f}{' (forming)' if forming else ''}"
+                   "</title></rect>")
+    if bars:
+        out.append(f"<text x='{left}' y='{H - 18}' fill='currentColor'>{bars[0]['time']:%m-%d %H:%M} UTC</text>")
+        out.append(f"<text x='{right}' y='{H - 18}' text-anchor='end' fill='currentColor'>"
+                   f"{bars[-1]['time']:%m-%d %H:%M} UTC</text>")
+    out.append(f"<text x='{left}' y='{H - 4}' fill='currentColor'>OANDA BCO_USD H1 mid candles, chart "
+               f"made {now:%Y-%m-%d %H:%M:%S} UTC. Dashed candle = forming (not used).</text></svg>")
+    return "".join(out)
+
+
+def write_signal_page(sig: dict, h1: list[dict], path: Path, now: datetime) -> Path:
+    a = sig.get("assessment") or {}
+    items = a.get("news_items") or []
+    rows = "".join(
+        f"<tr><td>{html.escape(i.get('bias', ''))}</td><td>{html.escape(i.get('status', ''))}</td>"
+        f"<td>{html.escape(i.get('scope', ''))}</td><td><a href='{html.escape(i.get('link') or '#')}'>"
+        f"{html.escape(i.get('title', ''))}</a><br><small>{html.escape(i.get('mechanism', ''))}</small></td>"
+        f"<td>{html.escape(str(i.get('published')))}</td><td>{html.escape(str(i.get('event_time')))}</td>"
+        f"<td>{html.escape(i.get('first_seen', ''))}</td></tr>" for i in items)
+    body = (
+        f"<h1>{html.escape(sig['id'])}: {sig['setup']['direction']} BCO_USD "
+        f"({html.escape(sig.get('label', ''))})</h1>"
+        "<p class=note>Paper / advisory. No order was placed. Hypothetical tracking only.</p>"
+        f"<p><b>News:</b> {html.escape(sig.get('news_line', ''))}</p>"
+        f"<p><b>Chart:</b> {html.escape(sig.get('chart_line', ''))}</p>"
+        f"<p><b>Main risk:</b> {html.escape(sig.get('contradiction', ''))}</p>"
+        f"<p><b>Scenarios:</b> {html.escape(sig.get('why', ''))}</p>"
+        f"<p><b>Policy row:</b> {html.escape(sig.get('policy_row', ''))}; news state "
+        f"{html.escape(str((a.get('news') or {}).get('state')))}</p>"
+        + _svg_chart(sig, h1, now) +
+        "<h2>Material news used (times in UTC)</h2><table><tr><th>bias</th><th>status</th>"
+        "<th>scope</th><th>item</th><th>published</th><th>event time</th><th>first seen</th></tr>"
+        f"{rows or '<tr><td colspan=7>none material (see news state)</td></tr>'}</table>"
+        "<h2>Decision record</h2><pre>" + html.escape(json.dumps(
+            {k: sig.get(k) for k in ("quote", "plan", "decided_at", "expires_at", "assessment")},
+            indent=1, default=str)) + "</pre>")
+    page = ("<!doctype html><html><head><meta charset=utf-8><meta name=viewport "
+            "content='width=device-width,initial-scale=1'><title>Brent signal</title><style>"
+            ":root{--bg:#fff;--fg:#1a1a1a;--mute:#666;--line:#ddd}"
+            "@media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#e8e8e8;--mute:#999;--line:#333}}"
+            "body{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;"
+            "margin:0 auto;max-width:900px;padding:16px}a{color:inherit}"
+            "table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--line);"
+            "padding:4px;text-align:left;vertical-align:top;font-size:13px}"
+            "pre{white-space:pre-wrap;font-size:12px}.note{color:var(--mute)}"
+            f"</style></head><body>{body}</body></html>")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(page, encoding="utf-8")
     return path

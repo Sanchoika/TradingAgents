@@ -522,3 +522,58 @@ def report(folder: str | Path) -> dict:
         "note": "Delays count only items published after the collector started (no backlog). "
                 "Not evidence of breaking-news speed until enough live items are measured.",
     }
+
+
+# ------------------------------------------------------------ view for the monitor
+_VIEW_CACHE: dict = {}
+
+
+def news_view(folder: str | Path, now: datetime) -> dict:
+    """Current news state for the price monitor, recomputed from the news log (no model call).
+
+    Freshness windows are applied at ``now``, so support expires on time. Any item first seen
+    in the last CONFLICT_HOURS that has not been classified makes the state 'unavailable':
+    the monitor never acts on news it has not analysed.
+    """
+    folder = Path(folder)
+    log, state_path = folder / "news.jsonl", folder / "news_state.json"
+    if not log.exists() or not state_path.exists():
+        return {"state": "unavailable", "why": "news check not running (no news log)", "items": []}
+    mt = (log.stat().st_mtime, state_path.stat().st_mtime)
+    if _VIEW_CACHE.get("key") != (str(folder), mt):
+        events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x.strip()]
+        _VIEW_CACHE.update(key=(str(folder), mt), events=events,
+                           st=json.loads(state_path.read_text(encoding="utf-8")))
+    events, st = _VIEW_CACHE["events"], _VIEW_CACHE["st"]
+    fresh = [f for f, v in st.get("feeds", {}).items() if v.get("last_ok") and
+             now - datetime.fromisoformat(v["last_ok"]) < timedelta(minutes=FEED_FRESH_MINUTES)]
+    health = {"fresh_feeds": sorted(fresh), "fresh_check": len(fresh) >= MIN_FRESH_FEEDS}
+    items = {e["key"]: e for e in events if e["event"] == "item" and not e["feed"].startswith("eia:")
+             and now - datetime.fromisoformat(e["first_seen"]) < timedelta(hours=CONFLICT_HOURS)
+             and datetime.fromisoformat(e["first_seen"]) <= now}
+    cls = {}
+    for e in events:
+        if e["event"] == "analysis":
+            for c in e.get("parsed") or []:
+                cls[c["key"]] = c
+    pending = [k for k in items if k not in cls]
+    last_poll = max((v.get("last_ok") or "" for v in st.get("feeds", {}).values()), default="")
+    base = {"health": health, "last_poll": last_poll, "n_items": len(items),
+            "last_first_seen": max((i["first_seen"] for i in items.values()), default="")}
+    if pending:
+        return {**base, "state": "unavailable", "items": [],
+                "why": f"{len(pending)} recent items not analysed yet"}
+    pairs = [(cls[k], items[k]) for k in items]
+    out = news_state(pairs, health, True, now)
+    material = []
+    for c, i in pairs:
+        for hours, tag in ((SUPPORT_HOURS, "support"), (CONFLICT_HOURS, "conflict")):
+            if is_material(c, i, now, hours):
+                material.append({**{k: i.get(k) for k in ("key", "title", "publisher", "link",
+                                                          "published", "first_seen", "feed")},
+                                 **{k: c[k] for k in ("category", "status", "scope", "bias",
+                                                      "mechanism", "contradiction", "event_time")},
+                                 "window": tag})
+                break
+    material.sort(key=lambda m: m["published"] or m["first_seen"], reverse=True)
+    return {**base, **out, "items": material}

@@ -8,14 +8,15 @@ before sending.
 
 from __future__ import annotations
 
-import concurrent.futures
+import collections
 import math
 import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from . import messages, rules
+from . import chart, messages, news, rules
 from .client import OandaReadError, Quote
 from .config import RULES_VERSION, BrentConfig
 from .rules import LONG, Setup
@@ -35,6 +36,11 @@ def p90(xs: list[float]) -> float | None:
     return s[min(len(s) - 1, math.ceil(0.9 * len(s)) - 1)]
 
 
+def _setup(d: dict) -> Setup:
+    """Setup from a state dict that may carry monitor bookkeeping keys."""
+    return Setup(**{k: v for k, v in d.items() if k in Setup.__dataclass_fields__})
+
+
 def _iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat(timespec="milliseconds")
 
@@ -43,29 +49,22 @@ def _dt(text: str) -> datetime:
     return datetime.fromisoformat(text)
 
 
-def classify_news(title: str, summary: str = "") -> str:
-    text = f"{title} {summary}".lower()
-    if "brent" in text:
-        return "Brent"
-    if "wti" in text or "west texas" in text:
-        return "WTI"
-    if any(w in text for w in ("oil", "crude", "opec", "petroleum", "barrel")):
-        return "oil (general)"
-    return "other"
-
-
 class Monitor:
     def __init__(self, cfg: BrentConfig, client, store: Store,
                  send: Callable[[str], tuple[bool, float]],
                  now: Callable[[], datetime] = lambda: datetime.now(UTC),
-                 news: Callable[[list[str]], list[dict]] | None = None,
-                 news_timeout: float = 8.0):
+                 news_view: Callable[[datetime], dict] | None = None,
+                 report_pages: bool = True):
         self.cfg, self.client, self.store = cfg, client, store
-        self._send, self.now, self.news = send, now, news
-        self.news_timeout = news_timeout
+        self._send, self.now = send, now
+        self.news_view = news_view or (lambda t: news.news_view(cfg.journal_dir, t))
+        self.report_pages = report_pages
         self.st = store.state() or {}
         self._init_state()
         self.last_quote: Quote | None = None
+        self.daily: list[dict] | None = None
+        self.h1: list[dict] | None = None
+        self.mids: collections.deque = collections.deque(maxlen=3000)
 
     # ------------------------------------------------------------------ state
     def _init_state(self):
@@ -195,9 +194,11 @@ class Monitor:
     def refresh_context(self, now: datetime):
         """On each new completed 15-min candle: levels, invalidations, new setups."""
         last = self.st.get("last_bar_time")
-        if last and now < _dt(last) + 2 * M15 + timedelta(seconds=5):
+        if last and now < _dt(last) + 2 * M15 + timedelta(seconds=5) and self.daily is not None:
             return
-        daily = self.client.candles(self.cfg.instrument, "D", self.cfg.atr_period + 3)
+        daily = self.client.candles(self.cfg.instrument, "D", 60)
+        self.daily = daily
+        self.h1 = self.client.candles(self.cfg.instrument, "H1", 120)
         bars = [b for b in self.client.candles(self.cfg.instrument, "M15", 8) if b["complete"]]
         a = rules.atr(daily, self.cfg.atr_period)
         pd = rules.previous_day(daily)
@@ -216,7 +217,7 @@ class Monitor:
         for s in self.st["setups"].values():
             if s["status"] not in ("armed", "alerted"):
                 continue
-            reason = rules.close_invalidates(Setup(**s), bar)
+            reason = rules.close_invalidates(_setup(s), bar)
             if reason:
                 prev = s["status"]
                 s["status"] = "invalidated"
@@ -234,40 +235,9 @@ class Monitor:
                     other["status"] = "invalidated"
                     self.store.write("setup_end", key=other["key"], status="invalidated",
                                      reason=f"opposite setup {s.kind} {s.direction} armed")
-            self.attach_news(s)
             self.st["seen_keys"].append(s.key)
             self.st["setups"][s.key] = s.to_dict()
             self.store.write("watch", key=s.key, setup=s.to_dict())
-
-    def attach_news(self, s: Setup):
-        if not self.news:
-            s.news_error = "news source not configured"
-            return
-        received = self.now()
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            items = pool.submit(self.news, self.cfg.news_symbols).result(timeout=self.news_timeout)
-        except concurrent.futures.TimeoutError:
-            s.news_error = f"news fetch timed out after {self.news_timeout:g}s"
-            return
-        except Exception as exc:
-            s.news_error = f"news unavailable: {str(exc)[:120]}"
-            return
-        finally:
-            pool.shutdown(wait=False)
-        keep = []
-        for n in items:
-            pub = n.get("pub_date")
-            if pub is None or received - pub > timedelta(hours=12) or pub > received:
-                continue
-            scope = classify_news(n.get("title", ""), n.get("summary", ""))
-            if scope == "other":
-                continue
-            keep.append({"scope": scope, "title": n["title"][:140], "publisher": n.get("publisher", ""),
-                         "link": n.get("link", ""), "pub": _iso(pub),
-                         "published": messages.stamp(pub), "received": messages.stamp(received)})
-        keep.sort(key=lambda n: n["pub"], reverse=True)
-        s.news = keep[:5]
 
     # ------------------------------------------------------------------- tick
     def tick(self):
@@ -281,6 +251,7 @@ class Monitor:
             self.st["last_quote"] = {"bid": q.bid, "ask": q.ask, "time": _iso(q.time),
                                      "tradeable": q.tradeable, "fetched_at": _iso(now)}
             self._metric("quote_age_s", q.age(now))
+            self.mids.append((q.time, q.mid))
         except Exception as exc:
             q = None
             n = self.st["ops"].get("quote_error_count", 0) + 1
@@ -346,7 +317,8 @@ class Monitor:
         last = self.st.get("last_alert_at")
         if last and now - _dt(last) < timedelta(minutes=self.cfg.cooldown_minutes):
             reasons.append(f"cooldown {self.cfg.cooldown_minutes} min after the last alert")
-        if any(s["status"] == "valid" for s in self.st["signals"].values()):
+        if any(s["status"] == "valid" and s.get("arm") == "combined"
+               for s in self.st["signals"].values()):
             reasons.append("another alert is still inside its window")
         m = self.st["metrics"]
         qa, sd = p90(m["quote_age_s"][-50:]), p90(m["send_s"][-20:])
@@ -363,16 +335,77 @@ class Monitor:
         armed = sorted((s for s in self.st["setups"].values() if s["status"] == "armed"),
                        key=lambda s: s["armed_at"])
         for sd in armed:
-            s = Setup(**sd)
+            s = _setup(sd)
             if not rules.in_zone(s, q.bid, q.ask):
                 continue  # normal waiting: quiet
-            blockers = rules.entry_blockers(s, q.bid, q.ask, q.time, q.tradeable, now, self.cfg)
-            blockers += self.global_blockers(now)
+            chart_blockers = rules.entry_blockers(s, q.bid, q.ask, q.time, q.tradeable, now, self.cfg)
+            if chart_blockers:
+                self.log_suppressed(s, chart_blockers)
+                continue
+            # A qualifying chart candidate. The chart-only comparison arm records it once.
+            if not sd.get("shadow_done"):
+                sd["shadow_done"] = True
+                self.issue(s, sd, arm="chart-only")
+            a = self.assess(s, q, now)
+            self.log_candidate(s, a)
+            if a["policy"]["action"] != s.direction:
+                continue  # WATCH / NO TRADE: the setup stays armed; news or chart may change
+            blockers = self.global_blockers(now)
             if blockers:
                 self.log_suppressed(s, blockers)
                 continue
-            self.issue(s, sd)
+            self.issue(s, sd, arm="combined", assessment=a)
             return
+
+    def assess(self, s: Setup, q: Quote, now: datetime) -> dict:
+        """Chart record (code) + news state (from the news log, no model call) + policy."""
+        entry = rules.executable(s.direction, q.bid, q.ask)
+        sd = s.to_dict()
+        if not self.daily or self.h1 is None:
+            ch = {"regime": "unknown", "with_trend": False, "room_r": None, "next_level": None,
+                  "h1_structure": "no candles", "slope_atr_per_day": None, "atr": s.atr}
+        else:
+            ch = chart.assess(sd, self.daily, self.h1, entry, q.spread)
+        try:
+            nv = self.news_view(now)
+        except Exception as exc:
+            nv = {"state": "unavailable", "why": f"news view failed: {exc}", "items": []}
+        pol = news.policy(s.direction, ch["regime"], s.kind, nv)
+        if pol["action"] == s.direction and ch.get("room_r") is not None and ch["room_r"] < 1:
+            pol = {"action": "NO TRADE", "row": "no room (under 1R to the next level)", "label": ""}
+        if pol["action"] == s.direction:
+            unsettled = self.unsettled(nv, now, s.atr)
+            if unsettled:
+                pol = {"action": "NO TRADE" if unsettled.startswith("price") else "WATCH",
+                       "row": f"unsettled: {unsettled}", "label": ""}
+        return {"assessed_at": _iso(now), "mid": q.mid, "chart": ch, "policy": pol,
+                "news": {k: nv.get(k) for k in ("state", "why", "health", "last_poll", "n_items",
+                                                "last_first_seen", "support", "conflict_window")},
+                "news_items": (nv.get("items") or [])[:6]}
+
+    def unsettled(self, nv: dict, now: datetime, a: float) -> str:
+        """Material news under 15 min old: abstain if price already moved > 0.5 ATR since it
+        was first seen, or if that cannot be measured."""
+        for it in nv.get("items") or []:
+            seen = _dt(it["first_seen"])
+            if now - seen > timedelta(minutes=15):
+                continue
+            before = [m for t, m in self.mids if t <= seen]
+            if not before:
+                return "fresh material news; price at first receipt not recorded"
+            move = abs(self.mids[-1][1] - before[-1]) / a if self.mids else 0
+            if move > 0.5:
+                return f"price moved {move:.2f} ATR since fresh material news"
+        return ""
+
+    def log_candidate(self, s: Setup, a: dict):
+        tag = f"{a['policy']['action']}|{a['policy']['row']}|{a['news'].get('state')}"
+        if self.st.setdefault("candidates_logged", {}).get(s.key) == tag:
+            return
+        self.st["candidates_logged"][s.key] = tag
+        self.store.write("candidate", key=s.key, kind=s.kind, direction=s.direction,
+                         action=a["policy"]["action"], row=a["policy"]["row"],
+                         label=a["policy"]["label"], assessment=a)
 
     def log_suppressed(self, s: Setup, reasons: list[str]):
         sig = "|".join(re.sub(r"[-+]?\d[\d.]*", "#", r) for r in reasons)
@@ -381,9 +414,9 @@ class Monitor:
         self.st["suppressed_logged"][s.key] = sig
         self.store.write("suppressed", key=s.key, direction=s.direction, reasons=reasons)
 
-    def issue(self, s: Setup, sd: dict):
-        """Final re-check on a fresh quote, then send. The validity clock starts at that
-        quote's timestamp."""
+    def issue(self, s: Setup, sd: dict, arm: str = "combined", assessment: dict | None = None):
+        """Final re-check on a fresh quote, then send (combined arm, alerts enabled) or record.
+        The validity clock starts at that quote's timestamp. No model call happens here."""
         try:
             q = self.client.quote(self.cfg.instrument)
         except Exception as exc:
@@ -391,22 +424,32 @@ class Monitor:
             return
         now = self.now()
         blockers = rules.entry_blockers(s, q.bid, q.ask, q.time, q.tradeable, now, self.cfg)
-        blockers += self.global_blockers(now)
+        telegram = arm == "combined" and self.cfg.alerts_enabled
+        if arm == "combined":
+            blockers += self.global_blockers(now)
+            fresh = self.assess(s, q, now)
+            if (fresh["policy"]["action"], fresh["policy"]["label"]) != \
+                    (assessment["policy"]["action"], assessment["policy"]["label"]):
+                blockers.append(f"assessment changed at final check: {fresh['policy']['row']}")
+            assessment = fresh
         expires = q.time + timedelta(seconds=self.cfg.validity_seconds)
-        expected_send = p90(self.st["metrics"]["send_s"][-20:]) or 5.0
-        usable = (expires - now).total_seconds() - expected_send
-        if usable < self.cfg.min_usable_seconds:
-            blockers.append(f"only {usable:.0f}s usable after expected delivery")
+        if telegram:
+            expected_send = p90(self.st["metrics"]["send_s"][-20:]) or 5.0
+            usable = (expires - now).total_seconds() - expected_send
+            if usable < self.cfg.min_usable_seconds:
+                blockers.append(f"only {usable:.0f}s usable after expected delivery")
         if blockers:
-            self.log_suppressed(s, ["final check: " + b for b in blockers])
+            if arm == "combined":
+                self.log_suppressed(s, ["final check: " + b for b in blockers])
             return
-        self.st["seq"] += 1
-        sig_id = f"BR-{rules.ny(now):%Y%m%d}-{self.st['seq']:03d}"
+        prefix, counter = ("BR", "seq") if arm == "combined" else ("SH", "seq_shadow")
+        self.st[counter] = self.st.get(counter, 0) + 1
+        sig_id = f"{prefix}-{rules.ny(now):%Y%m%d}-{self.st[counter]:03d}"
         entry = rules.executable(s.direction, q.bid, q.ask)
         plan = rules.plan(s, entry, q.spread, self.cfg)
         sig = {
-            "id": sig_id, "instrument": self.cfg.instrument, "rules": RULES_VERSION,
-            "config_hash": self.cfg.config_hash(), "setup": s.to_dict(),
+            "id": sig_id, "arm": arm, "telegram": telegram, "instrument": self.cfg.instrument,
+            "rules": RULES_VERSION, "config_hash": self.cfg.config_hash(), "setup": s.to_dict(),
             "quote": {"bid": q.bid, "ask": q.ask, "spread": round(q.spread, 4), "time": _iso(q.time),
                       "fetched_at": _iso(q.fetched_at), "rtt": round(q.rtt, 3)},
             "alert_mid": q.mid, "plan": plan, "decided_at": _iso(now), "expires_at": _iso(expires),
@@ -414,14 +457,22 @@ class Monitor:
             "position_note": self.position_note(s.direction), "sizing": self.sizing(s, entry, q),
             "paper": {"state": "waiting"}, "marks": {},
         }
+        if assessment:
+            sig.update(self.explain(s, assessment, sig_id))
+        self.store.write("signal", **{k: v for k, v in sig.items() if k != "paper"})
+        if arm == "combined":
+            sd["status"] = "alerted"
+            self.st["last_alert_at"] = _iso(now)
+            if self.report_pages:
+                self.write_signal_page(sig)
+        self.st["signals"][sig_id] = sig
+        if not telegram:  # recorded for paper tracking only; the paper clock starts now
+            sig.update(delivered=True, send_seconds=0.0, sent_at=_iso(now))
+            return
         text = messages.alert_text(sig, {"max_spread": self.cfg.max_spread,
                                          "max_hold_hours": self.cfg.max_hold_hours})
-        self.store.write("signal", **{k: v for k, v in sig.items() if k != "paper"})
         ok, secs, done = self.send(text, "alert", sig_id)
         sig.update(delivered=ok, send_seconds=round(secs, 3), sent_at=_iso(done))
-        sd["status"] = "alerted"
-        self.st["last_alert_at"] = _iso(now)
-        self.st["signals"][sig_id] = sig
         if not ok:
             sig["status"] = "undelivered"
             sig["paper"] = {"state": "missed", "reason": "alert not delivered"}
@@ -430,6 +481,44 @@ class Monitor:
         left = (expires - done).total_seconds()
         if left < self.cfg.human_latency_seconds:
             self.invalidate(sig, f"Telegram delivery took {secs:.0f}s, only {left:.0f}s left")
+
+    def explain(self, s: Setup, a: dict, sig_id: str) -> dict:
+        """One sentence each for news and chart, plus the main contradiction."""
+        nv, pol, items = a["news"], a["policy"], a["news_items"]
+        want = "bullish" if s.direction == LONG else "bearish"
+        sup = [i for i in items if i["bias"] == want and i["window"] == "support"]
+        if sup:
+            i = sup[0]
+            pub = messages.stamp(_dt(i["published"])) if i.get("published") else "no publish time"
+            news_line = (f"{len(sup)} material {want} item(s) in 6h, e.g. \"{i['title'][:110]}\" "
+                         f"({i['publisher'] or i['feed']}, {i['status']}, {i['scope']}; published {pub}, "
+                         f"first seen {messages.stamp(_dt(i['first_seen']))}): {i['mechanism']}")
+            contra = i.get("contradiction") or "none stated"
+        else:
+            n = len(nv["health"]["fresh_feeds"]) if nv.get("health") else 0
+            news_line = (f"Fresh check of {n} feeds (last poll {nv.get('last_poll', '?')[11:16]} UTC) "
+                         "found no material Brent news in 6h; no news is not a direction signal.")
+            contra = "No news support: this is a chart-led alert."
+        if s.direction == LONG and a["chart"].get("next_level"):
+            contra += f" Next resistance {a['chart']['next_level']['price']:.2f}."
+        elif a["chart"].get("next_level"):
+            contra += f" Next support {a['chart']['next_level']['price']:.2f}."
+        base = self.cfg.report_base_url.rstrip("/")
+        return {"label": pol["label"], "policy_row": pol["row"], "assessment": a,
+                "news_line": news_line, "chart_line": chart.sentence(a["chart"], s.to_dict()),
+                "contradiction": contra,
+                "report_url": f"{base}/signals/{sig_id}.html" if base else
+                f"signals/{sig_id}.html in the Brent folder"}
+
+    def write_signal_page(self, sig: dict):
+        from .report import write_signal_page
+
+        for folder in filter(None, [self.cfg.journal_dir, self.cfg.site_dir]):
+            try:
+                write_signal_page(sig, self.h1 or [], Path(folder) / "signals" / f"{sig['id']}.html",
+                                  self.now())
+            except OSError as exc:
+                self.store.write("page_error", id=sig["id"], error=str(exc)[:200])
 
     def why(self, s: Setup) -> str:
         t = s.trigger
@@ -503,17 +592,18 @@ class Monitor:
         sig["invalid_reason"] = reason
         now = self.now()
         self.store.write("update", id=sig["id"], status="invalidated", reason=reason)
-        if sig.get("delivered"):
+        if sig.get("delivered") and sig.get("telegram", True):
             self.send(messages.invalidated_text(sig["id"], now, reason), "update", sig["id"])
 
     def update_signals(self, q: Quote | None, now: datetime):
         for sig in list(self.st["signals"].values()):
-            s = Setup(**sig["setup"])
+            s = _setup(sig["setup"])
             if sig["status"] == "valid":
                 if now >= _dt(sig["expires_at"]):
                     sig["status"] = "expired"
                     self.store.write("update", id=sig["id"], status="expired")
-                    if self.cfg.send_expiry_notice and sig.get("delivered"):
+                    if self.cfg.send_expiry_notice and sig.get("delivered") \
+                            and sig.get("telegram", True):
                         self.send(messages.expired_text(sig["id"], now), "update", sig["id"])
                 elif q is None:
                     self.invalidate(sig, "quote unavailable")
@@ -619,7 +709,7 @@ class Monitor:
 
     def catch_up(self, sig: dict, now: datetime):
         """Replay 1-minute bid/ask candles since the last check (after a restart or gap)."""
-        pp, s = sig["paper"], Setup(**sig["setup"])
+        pp, s = sig["paper"], _setup(sig["setup"])
         since = _dt(pp["last_checked"])
         minutes = int((now - since).total_seconds() // 60) + 2
         try:

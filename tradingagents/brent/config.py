@@ -67,6 +67,11 @@ class BrentConfig:
     llm_quiet_et: list[str] = field(default_factory=lambda: ["07:30", "10:30"])  # morning bot
     news_poll_seconds: int = 180
 
+    # Telegram alerts for the combined arm. False = decisions are logged and paper-tracked
+    # but nothing is sent (used until the readiness checks pass).
+    alerts_enabled: bool = False
+    report_base_url: str = ""        # e.g. https://<host>/brent : alert links to signals/<id>.html
+
     # Operations
     poll_seconds: float = 3.0
     notify_command: str = ""         # e.g. "hermes send --to telegram --quiet"

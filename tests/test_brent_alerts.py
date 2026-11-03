@@ -31,10 +31,15 @@ class Clock:
         self.t += timedelta(seconds=seconds)
 
 
-def daily(n=17, h=110.0, low=108.0, c=109.0):
+def daily(n=30, step=0.3, last_close=109.0):
+    """Rising closes (daily regime 'up'), each candle 2.0 high-low; last high 110, low 108."""
     start = T0 - timedelta(days=n)
-    return [{"time": start + timedelta(days=i), "complete": True, "o": c, "h": h, "l": low, "c": c,
-             "bid_o": c, "ask_o": c, "bid_c": c, "ask_c": c} for i in range(n)]
+    out = []
+    for i in range(n):
+        c = last_close - step * (n - 1 - i)
+        out.append({"time": start + timedelta(days=i), "complete": True, "o": c, "h": c + 1,
+                    "l": c - 1, "c": c, "bid_o": c, "ask_o": c, "bid_c": c, "ask_c": c})
+    return out
 
 
 def m15(close, high=None, low=None, end=T0):
@@ -53,6 +58,7 @@ class FakeClient:
         self.daily = daily()
         self.m15 = m15(110.5)
         self.m1 = []
+        self.h1 = []
         self.trades = []
         self.hedging = False
         self.fail_quotes = False
@@ -65,7 +71,7 @@ class FakeClient:
                      fetched_at=now, tradeable=self.tradeable, quote_to_home=1.40, rtt=0.1)
 
     def candles(self, name, gran, count):
-        return {"D": self.daily, "M15": self.m15, "M1": self.m1}[gran]
+        return {"D": self.daily, "M15": self.m15, "M1": self.m1, "H1": self.h1}[gran]
 
     def summary(self):
         return {"currency": "CAD", "NAV": "100000", "hedgingEnabled": self.hedging}
@@ -84,12 +90,26 @@ class Sender:
         return self.ok, self.seconds
 
 
-def make(tmp_path, **cfg_kw):
+NO_NEWS = {"state": "none_material", "health": {"fresh_feeds": ["google:brent", "eia:summary"],
+                                                "fresh_check": True},
+           "last_poll": "2026-11-03T13:58:00+00:00", "items": [], "support": {}, "conflict_window": {}}
+
+
+class NewsFake:
+    def __init__(self, view=None):
+        self.view = dict(view or NO_NEWS)
+
+    def __call__(self, now):
+        return self.view
+
+
+def make(tmp_path, news_view=None, **cfg_kw):
     clock = Clock()
+    cfg_kw.setdefault("alerts_enabled", True)
     cfg = BrentConfig(journal_dir=str(tmp_path / "brent"), **cfg_kw)
     client, sender = FakeClient(clock), Sender(clock)
     store = Store(cfg.journal_dir)
-    mon = Monitor(cfg, client, store, sender, now=clock)
+    mon = Monitor(cfg, client, store, sender, now=clock, news_view=news_view or NewsFake())
     return mon, client, sender, clock, store
 
 
@@ -177,15 +197,18 @@ def test_alert_content_and_paper_fill(tmp_path):
     assert len(a) == 1
     text = a[0]
     for must in ("BR-20261103-001", "PAPER/ADVISORY", "NO ORDER PLACED", "LONG BCO_USD",
-                 "Valid until", "ET (", "UTC)", "ONLY while the executable ask", "Stop-loss order",
-                 "Setup invalid if", "not a broker order", "1R", "2R", "Holding period",
-                 "Reward/risk after costs", "Reasons to skip", "Position check", "News",
-                 "Size: not shown"):
+                 "Valid until", "ET (", "UTC)", "ONLY while the executable ask",
+                 "Suggested stop 110.00".replace("110.00", "109.50"), "(no order placed)",
+                 "Setup invalid if", "1R", "2R", "hold up to 8h", "chart-led, no material news",
+                 "News: Fresh check of 2 feeds", "no news is not a direction signal",
+                 "Chart: Daily regime up", "Main risk / reason to skip", "Report and chart:",
+                 "Reward/risk after costs", "Other reasons to skip", "Position check",
+                 "Policy row: no-news", "Size: not shown"):
         assert must in text, must
     sig = mon.st["signals"]["BR-20261103-001"]
     # validity clock starts at the final quote's timestamp, not at delivery
     assert datetime.fromisoformat(sig["expires_at"]) == T0 - timedelta(seconds=0.5) + timedelta(seconds=60)
-    assert store.events()[[e["event"] for e in store.events()].index("signal")]["id"] == sig["id"]
+    assert any(e["event"] == "signal" and e["id"] == sig["id"] for e in store.events())
     clock.advance(25)
     mon.tick()
     pp = mon.st["signals"][sig["id"]]["paper"]
@@ -426,32 +449,117 @@ def test_client_is_read_only():
     assert parse_time("2026-11-03T14:00:00Z") == datetime(2026, 11, 3, 14, tzinfo=UTC)
 
 
-def test_news_scope_and_timestamps(tmp_path):
-    mon, client, sender, clock, _ = make(tmp_path)
-    pub = T0 - timedelta(minutes=30)
-    mon.news = lambda syms: [
-        {"title": "Brent rises on supply worries", "publisher": "X", "link": "https://e/1", "pub_date": pub},
-        {"title": "WTI slips", "publisher": "Y", "link": "https://e/2", "pub_date": pub},
-        {"title": "Stocks rally", "publisher": "Z", "link": "https://e/3", "pub_date": pub},
-        {"title": "Old oil story", "publisher": "Z", "link": "https://e/4", "pub_date": T0 - timedelta(days=2)},
-    ]
+SUPPORT_ITEM = {"key": "k1", "title": "Libya halts crude exports from two ports", "publisher": "Example Wire",
+                "link": "https://example.com/libya", "published": "2026-11-03T12:30:00+00:00",
+                "first_seen": "2026-11-03T12:34:00+00:00", "feed": "google:brent",
+                "category": "supply_geopolitics", "status": "credible_report", "scope": "brent",
+                "bias": "bullish", "mechanism": "Less Libyan supply tightens Brent.",
+                "contradiction": "Outage length unknown.", "event_time": None, "window": "support"}
+
+
+def test_news_supported_alert(tmp_path):
+    view = {**NO_NEWS, "state": "bullish", "support": {"bullish": ["k1"]}, "items": [SUPPORT_ITEM]}
+    mon, client, sender, clock, store = make(tmp_path, news_view=NewsFake(view))
     mon.tick()
     text = alerts(sender)[0]
-    assert "[Brent] Brent rises" in text and "[WTI] WTI slips" in text
-    assert "Stocks rally" not in text and "Old oil story" not in text
-    assert "published 08:30:00 ET" in text and "received" in text
-    assert "oil news in the last 60 min" in text
+    assert "| news-supported" in text and "Libya halts crude exports" in text
+    assert "credible_report, brent; published 07:30:00 ET" in text and "first seen 07:34:00 ET" in text
+    assert "Main risk / reason to skip: Outage length unknown." in text
+    page = tmp_path / "brent" / "signals" / "BR-20261103-001.html"
+    assert page.exists() and "<svg" in page.read_text() and "forming" in page.read_text()
 
 
-def test_news_failure_is_not_fatal(tmp_path):
-    mon, client, sender, clock, _ = make(tmp_path)
+def test_conflicting_news_blocks_but_chart_only_arm_records(tmp_path):
+    bear = {**SUPPORT_ITEM, "bias": "bearish", "window": "conflict"}
+    view = {**NO_NEWS, "state": "none_material", "conflict_window": {"bearish": ["k1"]}, "items": [bear]}
+    mon, client, sender, clock, store = make(tmp_path, news_view=NewsFake(view))
+    mon.tick()
+    assert alerts(sender) == []
+    ev = store.events()
+    cand = [e for e in ev if e["event"] == "candidate"][0]
+    assert cand["action"] == "NO TRADE" and cand["row"] == "conflict"
+    shadow = [e for e in ev if e["event"] == "signal"]
+    assert [e["id"] for e in shadow] == ["SH-20261103-001"] and shadow[0]["arm"] == "chart-only"
+    clock.advance(25)
+    mon.tick()  # the shadow trade is paper-tracked, never messaged
+    assert any(e["event"] == "paper_fill" and e["id"] == "SH-20261103-001" for e in store.events())
+    assert sender.texts == []
+
+
+def test_news_unavailable_or_failing_means_watch(tmp_path):
+    mon, client, sender, clock, store = make(
+        tmp_path, news_view=NewsFake({"state": "unavailable", "why": "3 recent items not analysed yet"}))
+    mon.tick()
+    assert alerts(sender) == []
 
     def boom(_):
-        raise RuntimeError("yahoo down")
+        raise RuntimeError("log unreadable")
 
-    mon.news = boom
+    mon2, _, sender2, _, store2 = make(tmp_path / "b", news_view=boom)
+    mon2.tick()
+    assert alerts(sender2) == []
+    cand = [e for e in store2.events() if e["event"] == "candidate"][0]
+    assert cand["action"] == "WATCH" and cand["row"] == "evidence missing"
+
+
+def test_range_regime_needs_news_and_counter_trend_needs_failed_break(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    client.daily = daily(step=0.0)  # flat: range regime
     mon.tick()
-    assert "news unavailable: yahoo down" in alerts(sender)[0]
+    assert alerts(sender) == []
+    view = {**NO_NEWS, "state": "bullish", "support": {"bullish": ["k1"]}, "items": [SUPPORT_ITEM]}
+    mon2, client2, sender2, _, store2 = make(tmp_path / "b", news_view=NewsFake(view))
+    client2.daily = daily(step=-0.3, last_close=109.0)  # down regime, LONG breakout = counter-trend
+    mon2.tick()
+    assert alerts(sender2) == []
+    cand = [e for e in store2.events() if e["event"] == "candidate"][0]
+    assert cand["row"] == "counter-trend without a counter-trend setup"
+
+
+def test_alerts_disabled_logs_decision_without_sending(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path, alerts_enabled=False)
+    mon.tick()
+    assert sender.texts == []
+    sig = [e for e in store.events() if e["event"] == "signal" and e["arm"] == "combined"][0]
+    assert sig["telegram"] is False and sig["label"] == "chart-led, no material news"
+
+
+def test_assessment_change_at_final_check_suppresses(tmp_path):
+    class Flip:
+        def __init__(self):
+            self.n = 0
+
+        def __call__(self, now):
+            self.n += 1
+            return NO_NEWS if self.n == 1 else {"state": "unavailable", "why": "new item arrived"}
+
+    mon, client, sender, clock, store = make(tmp_path, news_view=Flip())
+    mon.tick()
+    assert alerts(sender) == []
+    assert any("assessment changed" in r for e in store.events() if e["event"] == "suppressed"
+               for r in e["reasons"])
+
+
+def test_unsettled_fresh_news_abstains(tmp_path):
+    fresh = {**SUPPORT_ITEM, "first_seen": (T0 - timedelta(minutes=5)).isoformat()}
+    view = {**NO_NEWS, "state": "bullish", "support": {"bullish": ["k1"]}, "items": [fresh]}
+    mon, client, sender, clock, store = make(tmp_path, news_view=NewsFake(view))
+    mon.tick()  # no price history at first receipt: cannot measure -> abstain
+    assert alerts(sender) == []
+    cand = [e for e in store.events() if e["event"] == "candidate"][0]
+    assert cand["row"].startswith("unsettled")
+
+
+def test_no_room_to_next_level_blocks(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    base = T0 - timedelta(hours=10)
+    # an H1 swing high just above the entry (110.40, 0.2 above ask 110.20; stop risk 0.70)
+    client.h1 = [{"time": base + timedelta(hours=i), "complete": True, "o": 110, "c": 110,
+                  "h": 110.4 if i == 5 else 110.1, "l": 109.6} for i in range(10)]
+    mon.tick()
+    assert alerts(sender) == []
+    cand = [e for e in store.events() if e["event"] == "candidate"][0]
+    assert cand["row"].startswith("no room")
 
 
 def test_report_and_page(tmp_path):

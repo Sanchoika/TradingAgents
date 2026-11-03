@@ -325,3 +325,43 @@ The policy is implemented in `news.policy()` and covered by tests:
 - One call only when new items arrive.
 - Any failure, invalid JSON or refused budget gives news state `unavailable`, and therefore
   WATCH.
+
+## 11. Combined decision in the monitor (alerts-only, experimental)
+
+The monitor reads the news state from `news.jsonl` (written by the `news-check` process)
+on every candidate. It never calls the model itself, and no model call happens after the
+60-second clock starts. Both processes must run:
+
+```bash
+tmux new -s brentnews   # python -m tradingagents.brent --config brent.toml news-check --analyze
+tmux new -s brent       # python -m tradingagents.brent --config brent.toml run   (type the token)
+```
+
+For each M15 setup that passes the chart blockers (range, spread, quote age, blackouts,
+market hours, cooldown):
+
+1. **Chart-only comparison arm.** It records one `SH-…` signal and paper-tracks it with the
+   same fill rules. It never sends to Telegram.
+2. **Candidate record.** Chart assessment (`chart.assess`) plus news view plus policy row are
+   logged as a `candidate` event, whether approved or rejected.
+3. **Combined arm.** If the policy action equals the setup direction, a final fresh quote is
+   taken and the assessment is recomputed. If the action or label changed, it is suppressed
+   ("assessment changed at final check"). Otherwise a `BR-…` signal is issued.
+   - If `alerts_enabled = true`, it is sent to Telegram.
+   - If `alerts_enabled = false`, it is logged and paper-tracked only.
+
+Extra abstentions:
+- **No room:** less than 1R to the next opposing level gives NO TRADE.
+- **Unsettled:** a material item less than 15 min old, with price moved more than 0.5 ATR,
+  gives NO TRADE. If that move can't be measured, the result is WATCH.
+
+Each `BR-…` alert links to `<report_base_url>/signals/<id>.html`. That page shows an SVG
+chart with the zone, stop, targets and levels, the news table and the full decision record.
+
+`report` keeps the arms separate:
+- combined paper results;
+- candidates by policy row;
+- the chart-only comparison.
+
+Telegram acceptance time is what gets measured. When your phone showed the message is not
+measured.

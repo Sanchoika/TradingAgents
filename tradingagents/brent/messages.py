@@ -17,44 +17,39 @@ def stamp(dt: datetime) -> str:
 
 
 def alert_text(sig: dict, extra: dict) -> str:
-    """The actionable alert: short block first, details after the divider."""
+    """The actionable alert: short block first (what to do, why, main risk), details after."""
     s, q, p = sig["setup"], sig["quote"], sig["plan"]
     long_ = s["direction"] == LONG
     side, px_name = ("BUY", "ask") if long_ else ("SELL", "bid")
     expiry = datetime.fromisoformat(sig["expires_at"])
     qt = datetime.fromisoformat(q["time"])
     lines = [
-        f"[BRENT PAPER/ADVISORY] {sig['id']} | NO ORDER PLACED",
-        f"{s['direction']} {sig['instrument']} (Brent CFD, OANDA practice prices)",
-        f"Entry: {side} only if {px_name} is {s['zone_lo']:.2f}-{s['zone_hi']:.2f}",
+        f"[BRENT PAPER/ADVISORY] {sig['id']} | NO ORDER PLACED | {sig.get('label', '')}",
+        f"{s['direction']} {sig['instrument']}: {side} only if {px_name} is "
+        f"{s['zone_lo']:.2f}-{s['zone_hi']:.2f}",
         f"Valid until {stamp(expiry)}, ONLY while the executable {px_name} stays within "
         f"{s['zone_lo']:.2f}-{s['zone_hi']:.2f} and spread is below {extra['max_spread']:g}. "
         "Otherwise skip. Check the broker quote before you submit.",
         f"Quote {stamp(qt)}: bid {q['bid']:.3f} / ask {q['ask']:.3f} / spread {q['spread']:.3f}",
-        f"Stop-loss order (broker): {s['stop']:.2f}",
-        f"Setup invalid if a 15-min candle closes {'below' if long_ else 'above'} "
-        f"{s['invalid_close']:.2f} (a reason to skip or exit, not a broker order)",
-        f"Targets (conditional): 1R {p['t1']:.2f} | 2R {p['t2']:.2f}",
-        f"Holding period: up to {extra['max_hold_hours']:g}h; forecast judged at +4h",
-        f"Reward/risk after costs: {p['rr1']:.2f} at 1R, {p['rr2']:.2f} at 2R "
-        f"({p['costs_note']})",
-        f"Size: {sig['sizing']}",
+        f"Suggested stop {s['stop']:.2f} (no order placed). Setup invalid if a 15-min candle "
+        f"closes {'below' if long_ else 'above'} {s['invalid_close']:.2f}.",
+        f"Targets (conditional): 1R {p['t1']:.2f} | 2R {p['t2']:.2f} | hold up to "
+        f"{extra['max_hold_hours']:g}h",
+        f"News: {sig.get('news_line', 'n/a')}",
+        f"Chart: {sig.get('chart_line', 'n/a')}",
+        f"Main risk / reason to skip: {sig.get('contradiction', 'n/a')}",
+        f"Report and chart: {sig.get('report_url', 'n/a')}",
         "",
         "---",
-        f"Why: {sig['why']}",
+        f"Reward/risk after costs: {p['rr1']:.2f} at 1R, {p['rr2']:.2f} at 2R ({p['costs_note']})",
+        f"Size: {sig['sizing']}",
+        "Other reasons to skip: " + ("; ".join(sig.get("skip_reasons") or [])
+                                     or "none flagged by the checks (still your call)"),
+        f"Position check: {sig['position_note']}",
+        f"Policy row: {sig.get('policy_row', 'n/a')}. Decided "
+        f"{stamp(datetime.fromisoformat(sig['decided_at']))}. Rules {sig['rules']} cfg "
+        f"{sig['config_hash']}. Paper tracking only.",
     ]
-    lines.append("Reasons to skip: " + ("; ".join(sig.get("skip_reasons") or [])
-                                        or "none flagged by the checks (still your call)"))
-    lines.append(f"Position check: {sig['position_note']}")
-    lines.append("News (context only; not a direction call, may already be priced in):")
-    if s.get("news"):
-        for n in s["news"][:3]:
-            lines.append(f"- [{n['scope']}] {n['title']} ({n['publisher']}; published "
-                         f"{n['published']}, received {n['received']}) {n['link']}")
-    else:
-        lines.append(f"- {s.get('news_error') or 'no Brent or oil items in the last 12h from Yahoo'}")
-    lines.append(f"Decided {stamp(datetime.fromisoformat(sig['decided_at']))}. Rules {sig['rules']} "
-                 f"cfg {sig['config_hash']}. Paper tracking only.")
     return "\n".join(lines)
 
 
