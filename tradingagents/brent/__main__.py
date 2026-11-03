@@ -18,10 +18,25 @@ from .config import RULES_VERSION, load_config
 from .store import AlreadyRunning, Store
 
 
-def _client(cfg):
-    from .client import ReadOnlyOanda, token_from_env_or_prompt
+def _client(cfg, tries: int = 6, sleep=time.sleep):
+    """Ask for the token once, then connect, retrying network errors and HTTP 5xx with
+    backoff (a single timeout must not end the monitor). A 4xx (bad token) fails at once."""
+    import requests
 
-    return ReadOnlyOanda(token_from_env_or_prompt())
+    from .client import OandaReadError, ReadOnlyOanda, token_from_env_or_prompt
+
+    token = token_from_env_or_prompt()
+    for i in range(tries):
+        try:
+            return ReadOnlyOanda(token)
+        except (requests.RequestException, OandaReadError) as exc:
+            transient = isinstance(exc, requests.RequestException) or " -> HTTP 5" in str(exc)
+            if not transient or i == tries - 1:
+                raise
+            wait = min(60, 5 * 2 ** i)
+            print(f"OANDA not reachable ({type(exc).__name__}); retrying in {wait}s", flush=True)
+            sleep(wait)
+    raise RuntimeError("unreachable")
 
 
 def _sender(cfg):

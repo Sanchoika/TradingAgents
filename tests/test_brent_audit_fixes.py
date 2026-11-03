@@ -413,3 +413,28 @@ def test_token_prompt_strips_bracketed_paste_and_control_chars(monkeypatch):
     assert client.token_from_env_or_prompt(env={}) == "abc-123"
     monkeypatch.setattr(client.getpass, "getpass", lambda prompt: "[200~xyz[201~ ")
     assert client.token_from_env_or_prompt(env={}) == "xyz"
+
+
+def test_client_connect_retries_timeouts_but_not_bad_tokens(monkeypatch):
+    import requests
+
+    from tradingagents.brent import __main__ as cli, client
+
+    monkeypatch.setattr(client, "token_from_env_or_prompt", lambda: "tok")
+    calls = []
+
+    class Flaky:
+        def __init__(self, token):
+            calls.append(token)
+            if len(calls) < 3:
+                raise requests.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(client, "ReadOnlyOanda", Flaky)
+    assert isinstance(cli._client(BrentConfig(), sleep=lambda s: None), Flaky) and len(calls) == 3
+
+    def bad(token):
+        raise client.OandaReadError("GET /accounts -> HTTP 400: bad")
+
+    monkeypatch.setattr(client, "ReadOnlyOanda", bad)
+    with pytest.raises(client.OandaReadError):
+        cli._client(BrentConfig(), sleep=lambda s: None)
