@@ -404,3 +404,12 @@ def test_alert_switch_reloads_without_restart(tmp_path):
     assert mon.cfg.alerts_enabled is True
     assert any(t.startswith("[BRENT STATUS] Experimental Brent entry alerts are ENABLED") for t in sender.texts)
     assert any(e["event"] == "alerts_switch" and e["enabled"] for e in store.events())
+
+
+def test_token_prompt_strips_bracketed_paste_and_control_chars(monkeypatch):
+    from tradingagents.brent import client
+
+    monkeypatch.setattr(client.getpass, "getpass", lambda prompt: "\x1b[200~abc-123\x1b[201~\r\n")
+    assert client.token_from_env_or_prompt(env={}) == "abc-123"
+    monkeypatch.setattr(client.getpass, "getpass", lambda prompt: "[200~xyz[201~ ")
+    assert client.token_from_env_or_prompt(env={}) == "xyz"

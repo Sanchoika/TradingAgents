@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -56,7 +57,10 @@ def token_from_env_or_prompt(env=os.environ) -> str:
     """Token from OANDA_API_KEY / OANDA_TOKEN, else a hidden prompt. Never saved or printed."""
     token = (env.get("OANDA_API_KEY") or env.get("OANDA_TOKEN") or "").strip()
     if not token:
-        token = getpass.getpass("OANDA practice token (hidden, not saved): ").strip()
+        token = getpass.getpass("OANDA practice token (hidden, not saved): ")
+    # A paste into tmux can carry bracketed-paste markers (ESC[200~ ... ESC[201~) or other
+    # control characters; they would make the Authorization header invalid (HTTP 400).
+    token = re.sub(r"\x1b\[[0-9;]*[~A-Za-z]|\[20[01]~|[^\x21-\x7e]", "", token)
     if not token:
         raise OandaReadError("no OANDA practice token given")
     return token
