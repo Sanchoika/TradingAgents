@@ -24,5 +24,5 @@ journal_dir = "~/.tradingagents/brent"
 # notes_dir = "C:/Brain/outputs/trading-demo"
 
 # Telegram alerts for the combined news + chart arm. false = log and paper-track only.
-alerts_enabled = false
+alerts_enabled = false     # read every 60 s while running: no restart needed
 # report_base_url = "https://hermes-server.taildb3e4d.ts.net/brent"   # alert links to signals/<id>.html

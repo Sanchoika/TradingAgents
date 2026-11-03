@@ -115,7 +115,15 @@ def test_fetch_errors_logged_and_health(tmp_path):
     ev = events(col)
     assert sum(e["event"] == "fetch_error" for e in ev) == 4
     h = col.feed_health()
-    assert h["fresh_feeds"] == ["eia:summary", "eia:table1"] and h["fresh_check"]
+    # EIA files polled fine, but they are official data, not a news check (audit finding 3)
+    assert h["fresh_feeds"] == ["eia:summary", "eia:table1"] and not h["fresh_check"]
+    assert h["general_news_fresh"] == 0
+
+
+def test_general_news_coverage_needs_two_news_feeds(tmp_path):
+    col, clock = make(tmp_path)
+    col.poll()
+    assert col.feed_health()["fresh_check"] and col.feed_health()["general_news_fresh"] == 4
     clock.t += timedelta(minutes=11)
     assert not col.feed_health()["fresh_check"]
 

@@ -28,6 +28,38 @@ def _ci(xs: list[float], n: int = 2000, seed: int = 7) -> tuple[float, float] | 
     return round(means[int(0.025 * n)], 3), round(means[int(0.975 * n)], 3)
 
 
+PAPER_V1_NOTE = ("paper-v1 records (before 2026-11-03 audit fixes) may be affected: live exits "
+                 "used the ask for long targets / bid for short targets, and live stop gaps "
+                 "filled at the stop. Kept unchanged; never pooled with paper-v2.")
+
+ARM_DIFFERENCES = (
+    "The arms are not matched, so their difference is NOT a measure of news's contribution. "
+    "Chart-only (SH-): issued at the first qualifying quote, no news check, no cooldown or "
+    "one-at-a-time limit, never sent; its paper clock starts at the decision. Combined (BR-): "
+    "needs the news + chart policy, cooldown and one open alert at a time, a final re-check, "
+    "and its paper clock starts when the notify command accepted the alert (adds the "
+    "notification delay).")
+
+
+def group_of(sg: dict, accepted: set | None = None) -> str:
+    """Reporting group: arm, then (combined) label and whether it was actually sent."""
+    if sg.get("arm", "combined") != "combined":
+        return "chart-only (shadow, not sent)"
+    label = sg.get("label") or "unlabelled"
+    base = "news-supported" if label.startswith("news-supported") else (
+        "chart-led" if label.startswith("chart-led") else label)
+    if "counter-trend" in label:
+        base += ", counter-trend"
+    ok = sg.get("delivered") if accepted is None else sg.get("id") in accepted
+    if sg.get("telegram") and ok:
+        sent = "sent (notify command accepted)"
+    elif sg.get("telegram"):
+        sent = "send failed"
+    else:
+        sent = "logged, not sent"
+    return f"combined {base} | {sent}"
+
+
 def summarize(events: list[dict]) -> dict:
     sent = [e for e in events if e["event"] == "sent"]
     alerts = [e for e in sent if e["kind"] == "alert"]
@@ -36,77 +68,136 @@ def summarize(events: list[dict]) -> dict:
     supp = Counter(re.sub(r"[-+]?\d[\d.]*", "#", r).split(" (")[0]
                    for e in events if e["event"] == "suppressed" for r in e["reasons"])
     send_s = [e["seconds"] for e in sent if e["ok"]]
+    accepted = {e["id"] for e in alerts if e["ok"]}
+    combined = {i for i, sg in signals.items() if sg.get("arm", "combined") == "combined"}
+    shadow = {i for i, sg in signals.items() if sg.get("arm") == "chart-only"}
     op = {
-        "signals_issued": len(signals),
-        "alerts_delivered": sum(1 for e in alerts if e["ok"]),
+        "signals_issued": len(combined),
+        "chart_only_signals": len(shadow),
+        "alerts_accepted_by_notify_command": sum(1 for e in alerts if e["ok"]),
         "alerts_failed": sum(1 for e in alerts if not e["ok"]),
+        "phone_display_time": "not measured (only notify-command acceptance is)",
         "invalidated": updates.get("invalidated", 0),
         "expired": updates.get("expired", 0),
+        "eligibility_lost_in_window": sum(1 for e in events if e["event"] == "eligibility_lost"),
         "send_seconds_median": round(median(send_s), 2) if send_s else None,
         "send_seconds_p90": p90(send_s),
         "setups_armed": sum(1 for e in events if e["event"] == "watch"),
         "suppressed_reasons": dict(supp.most_common(10)),
         "ops_notices": sum(1 for e in events if e["event"] == "ops"),
         "monitor_starts": sum(1 for e in events if e["event"] == "start"),
+        "experiments_seen": sorted({(sg.get("experiment") or {}).get("experiment", "brent-v1 (pre-manifest)")
+                                    for sg in signals.values()}),
     }
-    marks: dict[str, list[float]] = {}
+
+    def gkey(i: str) -> str:
+        sg = signals.get(i, {})
+        exp = (sg.get("experiment") or {}).get("experiment", "pre-manifest")
+        return f"{exp} | {group_of(sg, accepted)}"
+
+    marks: dict[str, dict[str, list[float]]] = {}
     for e in events:
-        if e["event"] == "mark":
-            marks.setdefault(str(e["minutes"]), []).append(e["move_atr"])
-    direction = {f"+{m}min": {"n": len(v), "mean_move_atr": round(mean(v), 3),
-                              "share_in_alert_direction": round(sum(x > 0 for x in v) / len(v), 2)}
-                 for m, v in sorted(marks.items(), key=lambda kv: int(kv[0]))}
+        if e["event"] == "mark" and e["id"] in signals:
+            marks.setdefault(gkey(e["id"]), {}).setdefault(str(e["minutes"]), []).append(e["move_atr"])
+    direction = {g: {f"+{m}min": {"n": len(v), "mean_move_atr": round(mean(v), 3),
+                                  "share_in_alert_direction": round(sum(x > 0 for x in v) / len(v), 2)}
+                     for m, v in sorted(ms.items(), key=lambda kv: int(kv[0]))}
+                 for g, ms in sorted(marks.items())}
+
     def paper_stats(ids: set) -> dict:
         exits = [e for e in events if e["event"] == "paper_exit" and e["id"] in ids]
-        rs = [e["net_r"] for e in exits]
-        by_kind: dict[str, list[float]] = {}
-        by_label: dict[str, list[float]] = {}
+        out = {"signals": len(ids),
+               "fills": sum(1 for e in events if e["event"] == "paper_fill" and e["id"] in ids),
+               "missed": sum(1 for e in events if e["event"] == "paper_missed" and e["id"] in ids)}
+        groups: dict[str, list[dict]] = {}
         for e in exits:
-            sg = signals.get(e["id"], {})
-            s = sg.get("setup", {})
-            by_kind.setdefault(f"{s.get('kind', '?')} {s.get('direction', '?')}", []).append(e["net_r"])
-            lab = (sg.get("label") or "n/a") + ("" if sg.get("telegram") or sg.get("arm") != "combined"
-                                                else " (logged, not sent)")
-            by_label.setdefault(lab, []).append(e["net_r"])
-        return {
-            "signals": len(ids),
-            "fills": sum(1 for e in events if e["event"] == "paper_fill" and e["id"] in ids),
-            "missed": sum(1 for e in events if e["event"] == "paper_missed" and e["id"] in ids),
-            "closed": len(rs),
-            "net_r_total": round(sum(rs), 2) if rs else 0.0,
-            "net_r_mean": round(mean(rs), 3) if rs else None,
-            "net_r_mean_ci95": _ci(rs),
-            "win_rate": round(sum(r > 0 for r in rs) / len(rs), 2) if rs else None,
-            "exit_reasons": dict(Counter(e["reason"] for e in exits)),
-            "by_setup": {k: {"n": len(v), "mean_r": round(mean(v), 3)} for k, v in by_kind.items()},
-            "by_label": {k: {"n": len(v), "mean_r": round(mean(v), 3), "ci95": _ci(v)}
-                         for k, v in by_label.items()},
-        }
+            ver = e.get("paper_rules") or signals.get(e["id"], {}).get("paper_rules") or "paper-v1"
+            groups.setdefault(f"{gkey(e['id'])} | {ver}", []).append(e)
+        out["by_group"] = {}
+        for g, es in sorted(groups.items()):
+            rs = [e["net_r"] for e in es]
+            by_kind: dict[str, list[float]] = {}
+            for e in es:
+                st = signals.get(e["id"], {}).get("setup", {})
+                by_kind.setdefault(f"{st.get('kind', '?')} {st.get('direction', '?')}", []).append(e["net_r"])
+            out["by_group"][g] = {
+                "closed": len(rs), "net_r_total": round(sum(rs), 2), "net_r_mean": round(mean(rs), 3),
+                "net_r_mean_bootstrap_ci95_descriptive": _ci(rs),
+                "win_rate": round(sum(r > 0 for r in rs) / len(rs), 2),
+                "exit_reasons": dict(Counter(e["reason"] for e in es)),
+                "with_data_gap": sum(1 for e in es if e.get("data_gap")),
+                "by_setup": {k: {"n": len(v), "mean_r": round(mean(v), 3)} for k, v in by_kind.items()},
+                **({"caution": PAPER_V1_NOTE} if g.endswith("paper-v1") else {}),
+            }
+        return out
 
-    combined = {i for i, sg in signals.items() if sg.get("arm", "combined") == "combined"}
-    shadow = {i for i, sg in signals.items() if sg.get("arm") == "chart-only"}
     paper = paper_stats(combined)
     cands = [e for e in events if e["event"] == "candidate"]
     paper["candidates_by_policy_row"] = dict(Counter(f"{e['action']}: {e['row']}" for e in cands))
     chart_only = paper_stats(shadow)
+    chart_only["differences_from_combined"] = ARM_DIFFERENCES
     manual = [e for e in events if e["event"] == "manual"]
-    op["signals_issued"] = len(combined)
-    op["chart_only_signals"] = len(shadow)
-    return {"operational": op, "directional": direction, "paper_hypothetical": paper,
+    return {"operational": op, "directional_by_group": direction, "paper_hypothetical": paper,
             "chart_only_comparison": chart_only,
             "manual_confirmed": {"records": len(manual),
                                  "entered": sum(1 for e in manual if e.get("entered")),
                                  "results": [{k: e.get(k) for k in ("id", "entered", "price", "units",
                                                                     "result", "note")}
                                              for e in manual[-20:]]},
-            "note": ("No edge claim: a few good alerts prove nothing. Judge only when the paper "
-                     "mean's confidence interval sits clearly above 0 after costs, across both "
-                     "setup families, over months.")}
+            "note": ("No edge claim. No fixed trade count and no simple confidence interval is "
+                     "proof of profitability: signals overlap in time and share news and market "
+                     "exposure, so resampled intervals are descriptive only. Groups are kept "
+                     "apart by experiment, arm, label, sent/not sent and paper-rules version.")}
 
 
-def status_lines(state: dict, locked: bool, now: datetime | None = None) -> list[str]:
+def news_health(journal_dir: str | Path, now: datetime | None = None) -> dict:
+    """The news collector as a separate process: lock held, and what its log says now."""
+    from .news import news_view
+    from .store import Store
+
     now = now or datetime.now(UTC)
-    out = [f"monitor running: {'yes' if locked else 'NO'}"]
+    running = Store(Path(journal_dir) / "newscheck").is_locked()
+    try:
+        v = news_view(journal_dir, now)
+    except Exception as exc:  # a broken log must show as a problem, not crash status
+        v = {"state": "unavailable", "status": "error", "why": str(exc)[:200]}
+    return {"running": running, "status": v.get("status"), "state": v.get("state"),
+            "why": v.get("why", ""), "last_poll_attempt": v.get("last_poll_attempt"),
+            "general_news_fresh": (v.get("health") or {}).get("general_news_fresh"),
+            "basis": v.get("basis")}
+
+
+def overall_health(state: dict, locked: bool, news: dict | None, now: datetime) -> list[str]:
+    """Reasons the assistant is NOT fully healthy (empty = healthy)."""
+    bad = []
+    if not locked:
+        bad.append("price monitor not running")
+    elif not state.get("last_tick") or \
+            (now - datetime.fromisoformat(state["last_tick"])).total_seconds() > 30:
+        bad.append("price monitor has not ticked in 30s")
+    if state.get("context_error"):
+        bad.append("chart data refresh failing")
+    if news is None:
+        bad.append("news collector not checked")
+    else:
+        if not news["running"]:
+            bad.append("news collector not running")
+        if news["status"] not in ("checked", "pending_analysis"):
+            bad.append(f"news {news['status']}: {news['why']}")
+    return bad
+
+
+def status_lines(state: dict, locked: bool, now: datetime | None = None,
+                 news: dict | None = None) -> list[str]:
+    now = now or datetime.now(UTC)
+    bad = overall_health(state, locked, news, now)
+    out = ["overall: OK" if not bad else "overall: DEGRADED: " + "; ".join(bad),
+           f"monitor running: {'yes' if locked else 'NO'}"]
+    if news is not None:
+        out.append(f"news collector running: {'yes' if news['running'] else 'NO'}; news "
+                   f"{news['status']} ({news['state']}); general news feeds fresh "
+                   f"{news['general_news_fresh']}; last poll {news['last_poll_attempt']}; "
+                   f"analysis basis {news['basis']}" + (f"; {news['why']}" if news["why"] else ""))
     if state.get("last_tick"):
         age = (now - datetime.fromisoformat(state["last_tick"])).total_seconds()
         out.append(f"last tick: {state['last_tick']} ({age:.0f}s ago)")
@@ -148,7 +239,8 @@ def _table(d: dict) -> str:
     return f"<table>{rows}</table>"
 
 
-def write_page(state: dict, events: list[dict], locked: bool, path: Path) -> Path:
+def write_page(state: dict, events: list[dict], locked: bool, path: Path,
+               news: dict | None = None) -> Path:
     """Read-only status and results page (no scripts, no controls)."""
     res = summarize(events)
     recent = [e for e in events if e["event"] == "signal"][-15:]
@@ -166,12 +258,14 @@ def write_page(state: dict, events: list[dict], locked: bool, path: Path) -> Pat
         "<h1>Brent alerts (paper / advisory)</h1>"
         f"<p class=note>Updated {datetime.now(UTC):%Y-%m-%d %H:%M} UTC. Alerts only; no orders are "
         "placed. Hypothetical results are not trades you made.</p>"
-        "<h2>Status</h2><pre>" + html.escape("\n".join(status_lines(state, locked))) + "</pre>"
+        "<h2>Status</h2><pre>" + html.escape("\n".join(status_lines(state, locked, news=news))) + "</pre>"
         "<h2>Recent signals</h2><table><tr><th>id</th><th>setup</th><th>zone</th><th>stop</th>"
         f"<th>status</th><th>paper net R</th></tr>{rows}</table>"
         "<h2>1. Operational</h2>" + _table(res["operational"]) +
-        "<h2>2. Directional (+60/+240 min, ATR units)</h2>" + _table(res["directional"] or {"n": 0}) +
-        "<h2>3. Paper, hypothetical, after costs</h2>" + _table(res["paper_hypothetical"]) +
+        "<h2>2. Directional (+60/+240 min, ATR units), by group</h2>"
+        + _table(res["directional_by_group"] or {"n": 0}) +
+        "<h2>3. Paper, hypothetical, after costs (combined arm)</h2>" + _table(res["paper_hypothetical"]) +
+        "<h3>Chart-only comparison (not sent)</h3>" + _table(res["chart_only_comparison"]) +
         "<h2>4. Manual (your records)</h2>" + _table(res["manual_confirmed"]) +
         f"<p class=note>{html.escape(res['note'])}</p>")
     page = (

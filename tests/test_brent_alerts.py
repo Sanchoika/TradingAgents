@@ -90,8 +90,9 @@ class Sender:
         return self.ok, self.seconds
 
 
-NO_NEWS = {"state": "none_material", "health": {"fresh_feeds": ["google:brent", "eia:summary"],
-                                                "fresh_check": True},
+NO_NEWS = {"state": "none_material", "status": "checked",
+           "health": {"fresh_feeds": ["google:brent", "google:opec"], "general_news_fresh": 2,
+                      "fresh_check": True},
            "last_poll": "2026-11-03T13:58:00+00:00", "items": [], "support": {}, "conflict_window": {}}
 
 
@@ -199,8 +200,8 @@ def test_alert_content_and_paper_fill(tmp_path):
     for must in ("BR-20261103-001", "PAPER/ADVISORY", "NO ORDER PLACED", "LONG BCO_USD",
                  "Valid until", "ET (", "UTC)", "ONLY while the executable ask",
                  "Suggested stop 110.00".replace("110.00", "109.50"), "(no order placed)",
-                 "Setup invalid if", "1R", "2R", "hold up to 8h", "chart-led, no material news",
-                 "News: Fresh check of 2 feeds", "no news is not a direction signal",
+                 "cancels this entry suggestion", "paper record exits only at the stop", "1R", "2R", "hold up to 8h", "chart-led, no material news",
+                 "News (headlines/snippets only): Fresh check of 2 general news searches", "no news is not a direction signal",
                  "Chart: Daily regime up", "Main risk / reason to skip", "Report and chart:",
                  "Reward/risk after costs", "Other reasons to skip", "Position check",
                  "Policy row: no-news", "Size: not shown"):
@@ -572,8 +573,13 @@ def test_report_and_page(tmp_path):
     mon.tick()
     res = summarize(store.events())
     assert res["operational"]["signals_issued"] == 1
-    assert res["paper_hypothetical"]["closed"] == 1 and res["paper_hypothetical"]["net_r_mean"] > 1
+    groups = res["paper_hypothetical"]["by_group"]
+    (g, stats), = groups.items()
+    assert g == "brent-exp-2 | combined chart-led | sent (notify command accepted) | paper-v2"
+    assert stats["closed"] == 1 and stats["net_r_mean"] > 1
     assert res["manual_confirmed"]["records"] == 0
+    assert "NOT a measure of news's contribution" in res["chart_only_comparison"]["differences_from_combined"]
+    assert "proof" in res["note"]
     page = write_page(mon.st, store.events(), False, tmp_path / "p" / "index.html")
     assert "Brent alerts" in page.read_text() and "<script" not in page.read_text()
     assert any("armed setups" in line for line in status_lines(mon.st, False))
@@ -617,4 +623,6 @@ def test_sender_runs_notify_in_own_session(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     ok, _ = cli._sender(BrentConfig(journal_dir=str(tmp_path), notify_command="true"))("hi")
-    assert ok and seen["input"] == "hi" and seen["start_new_session"] is True
+    # POSIX: own session so the notify tool can't signal the monitor; Windows has no sessions
+    import os
+    assert ok and seen["input"] == "hi" and seen["start_new_session"] is (os.name != "nt")
