@@ -1,0 +1,28 @@
+# Brent alerts-only module (python -m tradingagents.brent). Copy to brent.toml.
+# Separate from demo.toml: own journal, own process, own signal IDs. No orders, ever.
+# Everything below is the default except where noted; see docs/BRENT-ALERTS.md.
+
+instrument = "BCO_USD"
+range_low = 100.0          # your operating range for NEW entry suggestions (USD)
+range_high = 120.0
+
+validity_seconds = 60      # max time to act, counted from the final quote's timestamp
+min_usable_seconds = 30    # suppress if less is left after the expected Telegram delay
+max_quote_age_seconds = 10
+max_spread = 0.08          # USD per barrel
+
+# Event blackouts, New York time. "2 10:15-10:45" = Wednesdays (EIA weekly report).
+# Add holiday-shifted EIA dates as "YYYY-MM-DD HH:MM-HH:MM".
+blackouts = ["2 10:15-10:45"]
+
+# Sizing stays hidden until you approve a risk % for this module (e.g. 0.10).
+# risk_pct = 0.10
+
+notify_command = "hermes send --to telegram --quiet"   # same Telegram route as the demo digest
+journal_dir = "~/.tradingagents/brent"
+# site_dir = "/root/ta-dashboard/brent"     # status page next to the demo dashboard
+# notes_dir = "C:/Brain/outputs/trading-demo"
+
+# Telegram alerts for the combined news + chart arm. false = log and paper-track only.
+alerts_enabled = false
+# report_base_url = "https://hermes-server.taildb3e4d.ts.net/brent"   # alert links to signals/<id>.html
