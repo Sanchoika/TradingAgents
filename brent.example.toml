@@ -22,3 +22,7 @@ notify_command = "hermes send --to telegram --quiet"   # same Telegram route as 
 journal_dir = "~/.tradingagents/brent"
 # site_dir = "/root/ta-dashboard/brent"     # status page next to the demo dashboard
 # notes_dir = "C:/Brain/outputs/trading-demo"
+
+# Telegram alerts for the combined news + chart arm. false = log and paper-track only.
+alerts_enabled = false
+# report_base_url = "https://hermes-server.taildb3e4d.ts.net/brent"   # alert links to signals/<id>.html

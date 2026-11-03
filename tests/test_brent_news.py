@@ -233,3 +233,25 @@ def test_report_sections(tmp_path):
     assert {"feeds", "content_access", "model", "classification_examples", "note"} <= set(r)
     assert r["feeds"]["google:brent"]["delay_min_median"] == 10.0
     assert r["content_access"]["checked"] >= 1
+
+
+def test_google_redirect_page_is_not_counted_readable(tmp_path):
+    col, clock = make(tmp_path)
+    inner = col.get
+
+    def get(url):
+        r = inner(url)
+        if "ex.com" in url:  # article link: lands on Google's redirect page
+            r.url = "https://news.google.com/rss/articles/abc"
+        return r
+
+    col.get = get
+    col.poll()
+    ca = report(tmp_path)["content_access"]
+    assert ca["checked"] >= 1 and ca["readable_200_over_300_words"] == 0
+    assert ca["aggregator_redirect_not_publisher"] == ca["checked"]
+
+
+def test_percentiles_are_ordered():
+    xs = [2.4, 3.2]
+    assert news._pct(xs, 0.5) == 2.4 and news._pct(xs, 0.9) == 3.2 and news._pct([], 0.5) is None

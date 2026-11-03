@@ -17,6 +17,7 @@ import email.utils
 import hashlib
 import html
 import json
+import math
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -250,8 +251,11 @@ class NewsCollector:
             host = re.sub(r"^https?://([^/]+).*$", r"\1", getattr(r, "url", it.link) or it.link)
             paywall = bool(re.search(r"subscribe to (continue|read)|sign in to read|paywall",
                                      text, re.I))
+            # Google News links land on Google's redirect/consent page (tens of thousands of
+            # "words" of script), not the publisher article: never count that as readable.
+            redirect = host.endswith("news.google.com") or host.endswith("consent.google.com")
             self.write("content_check", key=it.key, status=r.status_code, host=host, words=words,
-                       paywall_hint=paywall)
+                       paywall_hint=paywall, aggregator_redirect=redirect)
         except Exception as exc:
             self.write("content_check", key=it.key, status=None, error=str(exc)[:160])
 
@@ -466,6 +470,13 @@ def analyze(collector: NewsCollector, model: Callable, budget: Budget,
 
 
 # ----------------------------------------------------------------------- report
+def _pct(xs: list[float], q: float):
+    """Nearest-rank percentile of a sorted list (None if empty)."""
+    if not xs:
+        return None
+    return xs[min(len(xs) - 1, max(0, math.ceil(q * len(xs)) - 1))]
+
+
 def report(folder: str | Path) -> dict:
     path = Path(folder) / "news.jsonl"
     ev = [json.loads(x) for x in path.read_text().splitlines() if x.strip()] if path.exists() else []
@@ -490,11 +501,13 @@ def report(folder: str | Path) -> dict:
         out_feeds[name] = {**f, "items": len(mine),
                            "no_publish_time": sum(i["published"] is None for i in mine),
                            "repeats": sum(bool(i.get("repeat_of")) for i in mine),
-                           "delay_min_median": live[len(live) // 2] if live else None,
-                           "delay_min_p90": live[int(0.9 * (len(live) - 1))] if live else None,
+                           "delay_min_median": _pct(live, 0.5),
+                           "delay_min_p90": _pct(live, 0.9),
                            "delay_sample": len(live),
                            "longest_gap_min": round(max(gaps), 1) if gaps else None}
     cc = [e for e in ev if e["event"] == "content_check"]
+    for c in cc:   # older log lines lack the flag: derive it from the host
+        c.setdefault("aggregator_redirect", str(c.get("host", "")).endswith("google.com"))
     an = [e for e in ev if e["event"] == "analysis"]
     called = [e for e in an if e.get("called")]
     lat = sorted(e["latency_s"] for e in called)
@@ -509,7 +522,10 @@ def report(folder: str | Path) -> dict:
         "content_access": {"checked": len(cc),
                            "readable_200_over_300_words": sum(1 for c in cc if c.get("status") == 200
                                                               and c.get("words", 0) > 300
-                                                              and not c.get("paywall_hint")),
+                                                              and not c.get("paywall_hint")
+                                                              and not c["aggregator_redirect"]),
+                           "aggregator_redirect_not_publisher": sum(1 for c in cc
+                                                                    if c["aggregator_redirect"]),
                            "paywall_hint": sum(1 for c in cc if c.get("paywall_hint")),
                            "failed": sum(1 for c in cc if c.get("status") != 200)},
         "model": {"calls": len(called), "failures": sum(1 for e in called if e.get("error")),

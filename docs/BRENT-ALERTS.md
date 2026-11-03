@@ -335,6 +335,7 @@ on every candidate. It never calls the model itself, and no model call happens a
 ```bash
 tmux new -s brentnews   # python -m tradingagents.brent --config brent.toml news-check --analyze
 tmux new -s brent       # python -m tradingagents.brent --config brent.toml run   (type the token)
+# or, on hermes-server, all in one: bash ~/ta-brent/scripts/brent_activate.sh
 ```
 
 For each M15 setup that passes the chart blockers (range, spread, quote age, blackouts,
