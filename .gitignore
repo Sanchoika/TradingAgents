@@ -224,4 +224,5 @@ reports/
 
 # Local demo-runner settings (OANDA practice forward test)
 demo.toml
+brent.toml
 demo-*.toml

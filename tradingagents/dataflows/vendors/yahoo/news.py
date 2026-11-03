@@ -199,3 +199,30 @@ def get_global_news_yfinance(
         return gap or f"No global news found between {start_date} and {as_of_date}"
 
     return f"## Global Market News, from {start_date} to {as_of_date}:\n\n{news_str}"
+
+
+def get_recent_articles_yfinance(symbols: list[str], limit: int = 10) -> list[dict]:
+    """Latest Yahoo Finance articles for each symbol, as dicts (title, publisher, link, pub_date).
+
+    Used by the Brent alerts module as context only. Articles without a publication time are
+    dropped, because the alert must show when each item was published. Raises
+    VendorUnavailableError when Yahoo answers for none of the symbols.
+    """
+    out, seen, answered = [], set(), False
+    for symbol in symbols:
+        try:
+            feed = yf_retry(lambda s=symbol: yf.Ticker(s).get_news(count=limit))
+        except VendorUnavailableError:
+            continue
+        if feed is None:
+            continue
+        answered = True
+        for article in feed:
+            data = _extract_article_data(article)
+            if data["pub_date"] is None or data["title"] in seen:
+                continue
+            seen.add(data["title"])
+            out.append({**data, "symbol": symbol})
+    if not answered:
+        raise VendorUnavailableError(f"Yahoo Finance returned no news for {', '.join(symbols)}")
+    return out
