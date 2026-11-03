@@ -242,3 +242,86 @@ time. It then recovers any windows and paper trades left from before a restart.
 - The token must be typed again after a server restart (by design: unattended start would
   mean storing the token, which is your decision).
 - The rules are untested hypotheses. Months of forward data are needed before any judgment.
+
+## 10. News + chart decision layer (phase 1: checks only)
+
+On 2026-11-03 Irakli asked that decisions combine news analysis with chart analysis.
+The design is in the Claude Doc "Brent assistant: revised decision design". Phase 1
+collects and classifies news **without sending alerts**, so feed timeliness and model
+behaviour can be measured first.
+
+```bash
+python -m tradingagents.brent --config brent.toml news-check --minutes 240 --analyze   # tmux window
+python -m tradingagents.brent --config brent.toml news-report
+```
+
+### Feeds
+
+| Feed | Source | Key needed |
+|---|---|---|
+| Google News RSS | Queries `Brent crude`, `OPEC+ oil output`, `oil supply disruption`, `site:opec.org` | none |
+| Yahoo Finance | `BZ=F`, `CL=F` | none |
+| EIA WPSR release files | `ir.eia.gov/wpsr/summary.txt`, `table1.csv` | none |
+
+The EIA API v2 needs a free key, but these release files do not. Every feed is treated as
+unverified for timeliness until the report shows measured delays.
+
+### Logged per item
+
+Everything goes to `news.jsonl`:
+- publish time, first-seen time and delay;
+- whether the item was published before the collector started (excluded from delay stats);
+- duplicates and repeat clusters;
+- fetch errors;
+- content checks: status, host, word count, paywall hint. Article text is never stored.
+
+### Logged per model call
+
+- model id and prompt hash;
+- input keys, raw output and the validated result;
+- latency and token usage;
+- the resulting news state.
+
+### Definitions (fixed before alerts)
+
+- **with-trend:** the daily regime matches the direction. Up means a 20-day regression slope
+  of at least +0.1 ATR/day; down means at most -0.1 ATR/day. A range regime is never
+  with-trend.
+- **relevant:** concerns crude supply, demand, OPEC+ policy, inventories, or geopolitics
+  that affects oil production or shipping.
+- **material:** all of these hold:
+  - the item is relevant;
+  - its status is official or credible_report (not rumour or opinion);
+  - its scope is brent or broad_oil (wti_us is context only);
+  - a mechanism is stated;
+  - it is not a repeat or update of an older story.
+- **fresh, for support:** published, or first seen if there is no publish time, within 6h.
+  That is inside the 8h holding period. Older supportive news never authorises a new trade.
+- **fresh, for conflict:** within 24h. Opposing material news blocks for longer.
+- **fresh check:** at least 2 feeds were polled successfully in the last 10 min, and the
+  analysis succeeded.
+
+### Policy
+
+The policy is implemented in `news.policy()` and covered by tests:
+
+| Situation | Outcome |
+|---|---|
+| News unavailable | WATCH |
+| Material conflict within 24h | NO TRADE |
+| Mixed news | WATCH |
+| Support within 6h, with-trend | Alert, labelled **news-supported** |
+| Support within 6h, counter-trend, FAILED_BREAK setup with its own invalidation | Alert, labelled **news-supported, counter-trend** |
+| Support within 6h, any other counter-trend setup | WATCH |
+| No material news on a fresh check, with-trend | Alert, labelled **chart-led, no material news** |
+| No material news on a fresh check, otherwise | WATCH |
+
+### Model
+
+- `llm_provider = "chatgpt"`, `llm_model = "gpt-6-luna"`: the existing repo integration on
+  the ChatGPT plan sign-in.
+- Ceilings of 6 calls an hour and 40 a day.
+- No calls from 07:30 to 10:30 ET on weekdays, while the morning bot runs.
+- One call only when new items arrive.
+- Any failure, invalid JSON or refused budget gives news state `unavailable`, and therefore
+  WATCH.

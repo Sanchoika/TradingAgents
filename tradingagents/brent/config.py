@@ -59,6 +59,14 @@ class BrentConfig:
     # Sizing is shown only when a risk % is approved for this module; otherwise omitted.
     risk_pct: float | None = None
 
+    # News checks (phase 1: logged only) and the bounded model call
+    llm_provider: str = "chatgpt"    # existing repo integration (ChatGPT plan sign-in)
+    llm_model: str = "gpt-6-luna"
+    llm_per_hour: int = 6            # ceilings, not targets
+    llm_per_day: int = 40
+    llm_quiet_et: list[str] = field(default_factory=lambda: ["07:30", "10:30"])  # morning bot
+    news_poll_seconds: int = 180
+
     # Operations
     poll_seconds: float = 3.0
     notify_command: str = ""         # e.g. "hermes send --to telegram --quiet"

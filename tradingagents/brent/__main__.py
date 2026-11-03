@@ -207,6 +207,48 @@ def cmd_manual(args, cfg) -> int:
     return 0
 
 
+def cmd_news_check(args, cfg) -> int:
+    """Phase 1: collect and timestamp news, optionally classify with the bounded model.
+    Logs only; sends no Telegram message and changes no decision."""
+    from .news import Budget, NewsCollector, analyze, default_model
+
+    lock = Store(Path(cfg.journal_dir) / "newscheck")
+    try:
+        lock.acquire()
+    except AlreadyRunning as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+    col = NewsCollector(cfg.journal_dir)
+    model = default_model(cfg.llm_provider, cfg.llm_model) if args.analyze else None
+    budget = Budget(cfg.llm_per_hour, cfg.llm_per_day, tuple(cfg.llm_quiet_et))
+    end = time.monotonic() + args.minutes * 60
+    try:
+        while True:
+            new = col.poll()
+            line = f"{datetime.now(UTC):%H:%M:%S} new items {len(new)}; {col.feed_health()}"
+            if model and new:
+                res = analyze(col, model, budget)
+                line += f"; analysis: {res.get('state', {}).get('state', res.get('note'))}"
+                if res.get("refused") or res.get("error"):
+                    line += f" ({res.get('refused') or res.get('error')})"
+            print(line, flush=True)
+            if args.once or time.monotonic() >= end:
+                break
+            time.sleep(cfg.news_poll_seconds)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        lock.release()
+    return 0
+
+
+def cmd_news_report(args, cfg) -> int:
+    from .news import report
+
+    print(json.dumps(report(cfg.journal_dir), indent=2, default=str))
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python -m tradingagents.brent", description=__doc__)
     p.add_argument("--config", help="TOML settings file (see brent.example.toml)")
@@ -229,6 +271,11 @@ def main(argv=None) -> int:
     m.add_argument("--units", type=float)
     m.add_argument("--result", type=float, help="realised P&L in account currency, if closed")
     m.add_argument("--note", default="")
+    n = sub.add_parser("news-check", help="phase 1: collect news (+ --analyze); logs only")
+    n.add_argument("--once", action="store_true")
+    n.add_argument("--minutes", type=float, default=60.0)
+    n.add_argument("--analyze", action="store_true", help="classify new items (bounded model)")
+    sub.add_parser("news-report", help="feed delays, gaps, duplicates, content access, model use")
     args = p.parse_args(argv)
     from .client import OandaReadError
 
@@ -236,7 +283,8 @@ def main(argv=None) -> int:
         cfg = load_config(args.config)
         return {"check": cmd_check, "feasibility": cmd_feasibility, "run": cmd_run,
                 "status": cmd_status, "stop": cmd_stop, "report": cmd_report,
-                "dashboard": cmd_dashboard, "manual": cmd_manual}[args.cmd](args, cfg)
+                "dashboard": cmd_dashboard, "manual": cmd_manual,
+                "news-check": cmd_news_check, "news-report": cmd_news_report}[args.cmd](args, cfg)
     except (OandaReadError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
