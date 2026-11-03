@@ -12,6 +12,16 @@ from pathlib import Path
 # so results from different rule sets are never pooled silently.
 RULES_VERSION = "brent-v1"
 
+# Versions of the layers added on top of the brent-v1 setup rules. Every signal carries all
+# of them (plus code commit, model and prompt hash) so different experiments never pool.
+# brent-exp-2 (2026-11-03 audit fixes): news rechecked during the entry window, chart data
+# must be fresh, news coverage counted by source function, paper exits on the executable
+# side with adverse gap fills, retries of pending news analysis.
+EXPERIMENT_VERSION = "brent-exp-2"
+CHART_POLICY_VERSION = "chart-v1"       # chart.py regime/room definitions
+NEWS_POLICY_VERSION = "news-policy-v2"  # news.py coverage + policy table
+PAPER_RULES_VERSION = "paper-v2"        # engine.py paper fills/exits
+
 # Fields that define the signal and paper-fill rules. Changing any of them changes the
 # config hash written on each signal.
 RULE_FIELDS = (
@@ -95,6 +105,47 @@ class BrentConfig:
     def config_hash(self) -> str:
         rules = {k: asdict(self)[k] for k in RULE_FIELDS}
         return hashlib.sha256(json.dumps(rules, sort_keys=True).encode()).hexdigest()[:12]
+
+
+EXPERIMENT_FIELDS = ("llm_provider", "llm_model", "llm_per_hour", "llm_per_day", "llm_quiet_et",
+                     "news_poll_seconds", "alerts_enabled")
+
+
+def code_commit() -> str:
+    """Git commit of the running code (env BRENT_CODE_COMMIT wins), else 'unknown'."""
+    import os
+    import subprocess
+
+    if os.environ.get("BRENT_CODE_COMMIT"):
+        return os.environ["BRENT_CODE_COMMIT"]
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=Path(__file__).parent,
+                             capture_output=True, text=True, timeout=5)
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                               cwd=Path(__file__).parent, capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            return out.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "unknown"
+
+
+def manifest(cfg: BrentConfig, commit: str | None = None) -> dict:
+    """Experiment identity recorded on every signal and on monitor start."""
+    from .chart import REGIME_SLOPE_ATR
+    from .news import prompt_hash
+
+    d = asdict(cfg)
+    exp = {k: d[k] for k in EXPERIMENT_FIELDS}
+    m = {"experiment": EXPERIMENT_VERSION, "rules": RULES_VERSION,
+         "chart_policy": CHART_POLICY_VERSION, "news_policy": NEWS_POLICY_VERSION,
+         "paper_rules": PAPER_RULES_VERSION, "code_commit": commit or code_commit(),
+         "model": f"{cfg.llm_provider}:{cfg.llm_model}", "prompt_hash": prompt_hash(),
+         "config_hash": cfg.config_hash(), "regime_slope_atr": REGIME_SLOPE_ATR,
+         "experiment_settings": exp}
+    m["experiment_hash"] = hashlib.sha256(json.dumps(
+        {k: v for k, v in m.items() if k != "code_commit"}, sort_keys=True).encode()).hexdigest()[:12]
+    return m
 
 
 def parse_blackout(text: str) -> tuple[str, str, str]:

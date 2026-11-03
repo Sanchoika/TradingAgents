@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import chart, messages, news, rules
 from .client import OandaReadError, Quote
-from .config import RULES_VERSION, BrentConfig
+from .config import PAPER_RULES_VERSION, RULES_VERSION, BrentConfig, manifest
 from .rules import LONG, Setup
 from .store import Store
 
@@ -27,6 +27,9 @@ OPS_REPEAT = timedelta(minutes=30)
 RANGE_REPEAT = timedelta(minutes=30)
 ACCOUNT_EVERY = timedelta(minutes=5)
 MARKS = (60, 240)  # directional check-points, minutes after the alert
+CHART_STALE = timedelta(minutes=18)   # latest processed completed 15-min candle older -> no entries
+CTX_RETRY = timedelta(seconds=20)     # wait between candle refetches while a new bar is late
+NEWS_PROC_EVERY = timedelta(seconds=60)
 
 
 def p90(xs: list[float]) -> float | None:
@@ -39,6 +42,12 @@ def p90(xs: list[float]) -> float | None:
 def _setup(d: dict) -> Setup:
     """Setup from a state dict that may carry monitor bookkeeping keys."""
     return Setup(**{k: v for k, v in d.items() if k in Setup.__dataclass_fields__})
+
+
+def _tracked(sig: dict) -> bool:
+    """Paper/directional tracking applies to accepted alerts and to simulated (not sent)
+    signals; never to an alert whose notification failed."""
+    return bool(sig.get("delivered") or sig.get("simulated"))
 
 
 def _iso(dt: datetime) -> str:
@@ -54,9 +63,11 @@ class Monitor:
                  send: Callable[[str], tuple[bool, float]],
                  now: Callable[[], datetime] = lambda: datetime.now(UTC),
                  news_view: Callable[[datetime], dict] | None = None,
-                 report_pages: bool = True):
+                 report_pages: bool = True, cfg_path: str | None = None):
         self.cfg, self.client, self.store = cfg, client, store
         self._send, self.now = send, now
+        # The separate news collector is watched only in production (default news view).
+        self.watch_news_process = news_view is None
         self.news_view = news_view or (lambda t: news.news_view(cfg.journal_dir, t))
         self.report_pages = report_pages
         self.st = store.state() or {}
@@ -65,6 +76,9 @@ class Monitor:
         self.daily: list[dict] | None = None
         self.h1: list[dict] | None = None
         self.mids: collections.deque = collections.deque(maxlen=3000)
+        self.manifest = manifest(cfg)
+        self._news_proc_checked: datetime | None = None
+        self.cfg_path, self._switch_checked = cfg_path, None
 
     # ------------------------------------------------------------------ state
     def _init_state(self):
@@ -116,6 +130,7 @@ class Monitor:
         """Recover after a restart, measure quote freshness and Telegram delivery."""
         now = self.now()
         self.store.write("start", rules=RULES_VERSION, config_hash=self.cfg.config_hash(),
+                         manifest=self.manifest,
                          config={k: getattr(self.cfg, k) for k in self.cfg.__dataclass_fields__
                                  if k != "notify_command"})
         self.recover(now)
@@ -128,7 +143,8 @@ class Monitor:
                 pass
             sleep(1)
         self.save()
-        self.send(messages.start_text(RULES_VERSION, self.cfg.config_hash(), account_line), "start")
+        self.send(messages.start_text(RULES_VERSION, self.cfg.config_hash(), account_line,
+                                      self.manifest["experiment"], self.cfg.alerts_enabled), "start")
         self.save()
         self.save()
 
@@ -194,16 +210,28 @@ class Monitor:
 
     # ---------------------------------------------------------------- context
     def refresh_context(self, now: datetime):
-        """On each new completed 15-min candle: levels, invalidations, new setups."""
+        """On each new completed 15-min candle: levels, invalidations, new setups.
+
+        Only a fully processed candle advances ``last_bar_time``; a failed refresh is
+        recorded in ``context_error`` and blocks new entries until a refresh succeeds."""
         last = self.st.get("last_bar_time")
-        if last and now < _dt(last) + 2 * M15 + timedelta(seconds=5) and self.daily is not None:
+        if last and now < _dt(last) + 2 * M15 + timedelta(seconds=5) and self.daily is not None \
+                and self.h1 is not None and not self.st.get("context_error"):
             return
-        daily = self.client.candles(self.cfg.instrument, "D", 60)
-        self.daily = daily
-        self.h1 = self.client.candles(self.cfg.instrument, "H1", 120)
-        bars = [b for b in self.client.candles(self.cfg.instrument, "M15", 8) if b["complete"]]
-        a = rules.atr(daily, self.cfg.atr_period)
-        pd = rules.previous_day(daily)
+        retry_at = self.st.get("ctx_retry_at")
+        if retry_at and now < _dt(retry_at) and self.daily is not None and self.h1 is not None:
+            return
+        self.st["ctx_retry_at"] = _iso(now + CTX_RETRY)
+        try:
+            daily = self.client.candles(self.cfg.instrument, "D", 60)
+            h1 = self.client.candles(self.cfg.instrument, "H1", 120)
+            bars = [b for b in self.client.candles(self.cfg.instrument, "M15", 8) if b["complete"]]
+            a = rules.atr(daily, self.cfg.atr_period)
+            pd = rules.previous_day(daily)
+        except Exception as exc:
+            self.st["context_error"] = {"at": _iso(now), "error": f"{type(exc).__name__}: {exc}"[:200]}
+            raise
+        self.daily, self.h1 = daily, h1
         day = rules.ny(pd["time"]).date().isoformat()
         self.st["ctx"] = {"day": day, "pdh": pd["h"], "pdl": pd["l"], "atr": round(a, 4),
                           "refreshed_at": _iso(now)}
@@ -214,6 +242,23 @@ class Monitor:
             close_t = b["time"] + M15
             self.on_bar(b, close_t, pd["h"], pd["l"], a, day)
             self.st["last_bar_time"] = _iso(b["time"])
+        self.st["context_error"] = None
+        if new:
+            self.st["ctx_retry_at"] = None
+
+    def chart_problem(self, now: datetime) -> str | None:
+        """Why chart data is not good enough for a NEW entry suggestion (None = fine)."""
+        err = self.st.get("context_error")
+        if err:
+            return f"chart data refresh failed at {err['at'][11:19]} UTC: {err['error']}"
+        last = self.st.get("last_bar_time")
+        if not last or self.daily is None or self.h1 is None:
+            return "chart data not loaded yet"
+        lag = now - (_dt(last) + M15)
+        if lag > CHART_STALE:
+            return (f"latest processed 15-min candle closed {lag.total_seconds() / 60:.0f} min ago "
+                    "(chart data stale)")
+        return None
 
     def on_bar(self, bar: dict, close_t: datetime, pdh: float, pdl: float, a: float, day: str):
         for s in self.st["setups"].values():
@@ -244,10 +289,22 @@ class Monitor:
     # ------------------------------------------------------------------- tick
     def tick(self):
         t0 = time.monotonic()
-        now = self.now()
-        self.st["last_tick"] = _iso(now)
+        self.st["last_tick"] = _iso(self.now())
+        # Slow network work first (candles, account), then the quote, then a fresh clock, so
+        # every age and validity check below uses times taken after the slow calls.
+        try:
+            self.refresh_context(self.now())
+        except Exception as exc:
+            self.store.write("context_error", error=str(exc)[:200])
+            if not rules.market_closed_by_clock(self.now()):
+                self.ops_notice("context", f"could not refresh 15-min/daily candles: {exc}. "
+                                "New entry suggestions are blocked until chart data is fresh.")
+        self.refresh_account()
+        self.reload_alert_switch(self.now())
+        self.check_news_process(self.now())
         try:
             q = self.client.quote(self.cfg.instrument)
+            now = self.now()
             self.last_quote = q
             self.st["ops"]["quote_error_count"] = 0
             self.st["last_quote"] = {"bid": q.bid, "ask": q.ask, "time": _iso(q.time),
@@ -255,7 +312,7 @@ class Monitor:
             self._metric("quote_age_s", q.age(now))
             self.mids.append((q.time, q.mid))
         except Exception as exc:
-            q = None
+            q, now = None, self.now()
             n = self.st["ops"].get("quote_error_count", 0) + 1
             self.st["ops"]["quote_error_count"] = n
             if n in (1, 10, 100, 1000):
@@ -263,22 +320,61 @@ class Monitor:
             if n >= 20 and not rules.market_closed_by_clock(now):
                 self.ops_notice("quote_errors", f"{n} quote requests failed in a row: {exc}. "
                                 "Actionable alerts are suppressed until quotes return.")
-        try:
-            self.refresh_context(now)
-        except Exception as exc:
-            self.store.write("context_error", error=str(exc)[:200])
-            if not rules.market_closed_by_clock(now):
-                self.ops_notice("context", f"could not refresh 15-min/daily candles: {exc}")
-        self.refresh_account()
         if q is not None:
             self.check_stale(q, now)
             self.check_range(q, now)
         self.update_signals(q, now)
         self.expire_setups(now)
         if q is not None:
-            self.try_alerts(q, now)
+            self.try_alerts(q, self.now())
         self._metric("tick_s", time.monotonic() - t0)
         self.save()
+
+    def reload_alert_switch(self, now: datetime):
+        """Only ``alerts_enabled`` is re-read from the config file while running (every 60 s),
+        so shadow mode can end without a restart (a restart needs the token typed again).
+        Every other setting needs a restart. The change is logged and announced once."""
+        if not self.cfg_path or (self._switch_checked and now - self._switch_checked < NEWS_PROC_EVERY):
+            return
+        self._switch_checked = now
+        try:
+            import tomllib
+
+            with open(self.cfg_path, "rb") as fh:
+                want = bool(tomllib.load(fh).get("alerts_enabled", False))
+        except (OSError, ValueError) as exc:
+            self.store.write("switch_error", error=str(exc)[:200])
+            return
+        if want == self.cfg.alerts_enabled:
+            return
+        self.cfg.alerts_enabled = want
+        self.manifest = manifest(self.cfg, self.manifest.get("code_commit"))
+        self.store.write("alerts_switch", enabled=want, manifest=self.manifest)
+        self.send(messages.switch_text(want, self.manifest), "status")
+
+    def check_news_process(self, now: datetime):
+        """The news collector is a separate process: notice when it stops or goes stale."""
+        if not self.watch_news_process or \
+                (self._news_proc_checked and now - self._news_proc_checked < NEWS_PROC_EVERY):
+            return
+        self._news_proc_checked = now
+        try:
+            locked = Store(Path(self.cfg.journal_dir) / "newscheck").is_locked()
+            nv = self.news_view(now)
+        except Exception as exc:
+            locked, nv = False, {"status": "collector_missing", "why": str(exc)}
+        problem = ""
+        if not locked:
+            problem = "the Brent news collector is not running"
+        elif nv.get("status") in ("collector_stale", "collector_missing"):
+            problem = nv.get("why", "news collector stale")
+        elif nv.get("status") == "missing_coverage":
+            problem = nv.get("why", "news coverage missing")
+        self.st["news_process"] = {"checked_at": _iso(now), "running": locked,
+                                   "status": nv.get("status"), "problem": problem}
+        if problem:
+            self.ops_notice("news_process", f"{problem}. Entry alerts that need news are "
+                            "suppressed (WATCH) until it recovers.")
 
     def check_stale(self, q: Quote, now: datetime):
         age = q.age(now)
@@ -341,6 +437,9 @@ class Monitor:
             if not rules.in_zone(s, q.bid, q.ask):
                 continue  # normal waiting: quiet
             chart_blockers = rules.entry_blockers(s, q.bid, q.ask, q.time, q.tradeable, now, self.cfg)
+            stale = self.chart_problem(now)
+            if stale:
+                chart_blockers.append(stale)
             if chart_blockers:
                 self.log_suppressed(s, chart_blockers)
                 continue
@@ -381,7 +480,8 @@ class Monitor:
                 pol = {"action": "NO TRADE" if unsettled.startswith("price") else "WATCH",
                        "row": f"unsettled: {unsettled}", "label": ""}
         return {"assessed_at": _iso(now), "mid": q.mid, "chart": ch, "policy": pol,
-                "news": {k: nv.get(k) for k in ("state", "why", "health", "last_poll", "n_items",
+                "news": {k: nv.get(k) for k in ("state", "status", "why", "basis", "health",
+                                                "last_poll", "n_items",
                                                 "last_first_seen", "support", "conflict_window")},
                 "news_items": (nv.get("items") or [])[:6]}
 
@@ -434,6 +534,12 @@ class Monitor:
                     (assessment["policy"]["action"], assessment["policy"]["label"]):
                 blockers.append(f"assessment changed at final check: {fresh['policy']['row']}")
             assessment = fresh
+        stale = self.chart_problem(now)
+        if stale:
+            blockers.append(stale)
+        now = self.now()  # re-read after the news/chart work above
+        if (now - q.time).total_seconds() > self.cfg.max_quote_age_seconds:
+            blockers.append(f"final quote is {(now - q.time).total_seconds():.0f}s old after checks")
         expires = q.time + timedelta(seconds=self.cfg.validity_seconds)
         if telegram:
             expected_send = p90(self.st["metrics"]["send_s"][-20:]) or 5.0
@@ -458,6 +564,7 @@ class Monitor:
             "status": "valid", "why": self.why(s), "skip_reasons": self.skip_reasons(s, q, now),
             "position_note": self.position_note(s.direction), "sizing": self.sizing(s, entry, q),
             "paper": {"state": "waiting"}, "marks": {},
+            "experiment": self.manifest, "paper_rules": PAPER_RULES_VERSION,
         }
         if assessment:
             sig.update(self.explain(s, assessment, sig_id))
@@ -468,13 +575,20 @@ class Monitor:
             if self.report_pages:
                 self.write_signal_page(sig)
         self.st["signals"][sig_id] = sig
-        if not telegram:  # recorded for paper tracking only; the paper clock starts now
-            sig.update(delivered=True, send_seconds=0.0, sent_at=_iso(now))
+        if not telegram:
+            # Not sent (chart-only comparison, or alerts disabled): tracked on paper with the
+            # same human-latency rule, the clock starting at the decision. Never "delivered".
+            sig.update(delivered=False, simulated=True, send_seconds=None, sent_at=_iso(now),
+                       notice="not sent: chart-only comparison arm" if arm != "combined"
+                       else "not sent: alerts disabled")
             return
         text = messages.alert_text(sig, {"max_spread": self.cfg.max_spread,
                                          "max_hold_hours": self.cfg.max_hold_hours})
         ok, secs, done = self.send(text, "alert", sig_id)
-        sig.update(delivered=ok, send_seconds=round(secs, 3), sent_at=_iso(done))
+        # "delivered" = the notify command / Telegram API accepted it; phone display is unknown.
+        sig.update(delivered=ok, send_seconds=round(secs, 3), sent_at=_iso(done),
+                   notice="accepted by the notify command (phone display not measured)" if ok
+                   else "notify command failed")
         if not ok:
             sig["status"] = "undelivered"
             sig["paper"] = {"state": "missed", "reason": "alert not delivered"}
@@ -497,9 +611,11 @@ class Monitor:
                          f"first seen {messages.stamp(_dt(i['first_seen']))}): {i['mechanism']}")
             contra = i.get("contradiction") or "none stated"
         else:
-            n = len(nv["health"]["fresh_feeds"]) if nv.get("health") else 0
-            news_line = (f"Fresh check of {n} feeds (last poll {nv.get('last_poll', '?')[11:16]} UTC) "
-                         "found no material Brent news in 6h; no news is not a direction signal.")
+            h = nv.get("health") or {}
+            n = h.get("general_news_fresh", len(h.get("fresh_feeds", [])))
+            news_line = (f"Fresh check of {n} general news searches (last poll "
+                         f"{(nv.get('last_poll') or '?')[11:16]} UTC) found no material Brent news "
+                         "in 6h; no news is not a direction signal.")
             contra = "No news support: this is a chart-led alert."
         if s.direction == LONG and a["chart"].get("next_level"):
             contra += f" Next resistance {a['chart']['next_level']['price']:.2f}."
@@ -610,17 +726,36 @@ class Monitor:
                 elif q is None:
                     self.invalidate(sig, "quote unavailable")
                 else:
-                    reason = self.validity_problem(s, q, now)
+                    reason = self.validity_problem(s, q, now) or self.eligibility_problem(sig, s, q, now)
                     if reason:
                         self.invalidate(sig, reason)
             self.paper_step(sig, s, q, now)
             if q is not None:
                 self.directional_marks(sig, q, now)
-            marks_done = len(sig["marks"]) == len(MARKS) or not sig.get("delivered")
+            marks_done = len(sig["marks"]) == len(MARKS) or not _tracked(sig)
             if sig["paper"]["state"] in ("missed", "closed") and marks_done \
                     and sig["status"] != "valid":
                 self.store.write("signal_done", id=sig["id"])
                 del self.st["signals"][sig["id"]]
+
+    def eligibility_problem(self, sig: dict, s: Setup, q: Quote, now: datetime) -> str | None:
+        """Combined-arm alerts stay valid only while the news + chart policy still approves the
+        same direction (news can become unavailable, stale or contradictory inside the window).
+        Reads the news log only: no model call inside the entry window."""
+        if sig.get("arm", "combined") != "combined":
+            return None
+        a = self.assess(s, q, now)
+        pol = a["policy"]
+        if pol["action"] != s.direction:
+            self.store.write("eligibility_lost", id=sig["id"], row=pol["row"],
+                             news_state=a["news"].get("state"), news_status=a["news"].get("status"))
+            why = a["news"].get("why") or a["news"].get("state")
+            return f"news/chart policy no longer approves it: {pol['row']} (news: {why})"
+        if pol["label"] != sig.get("label") and \
+                sig.get("label_seen") != pol["label"]:
+            sig["label_seen"] = pol["label"]
+            self.store.write("label_changed", id=sig["id"], label=pol["label"], was=sig.get("label"))
+        return None
 
     def validity_problem(self, s: Setup, q: Quote, now: datetime) -> str | None:
         if not q.tradeable:
@@ -637,45 +772,66 @@ class Monitor:
 
     # ------------------------------------------------------------------ paper
     def paper_step(self, sig: dict, s: Setup, q: Quote | None, now: datetime):
-        """Frozen paper rules: the earliest fill is human_latency_seconds after delivery, at
-        the executable quote then (ask for a buy, bid for a sell) plus 1 spread slippage, and
-        only while the alert is still valid. Never the best price inside the zone."""
+        """Paper rules (paper-v2). Entry: the earliest fill is human_latency_seconds after the
+        alert was accepted (or after the decision for a signal that was not sent), only while
+        the signal is still valid (zone, spread, freshness, tradeable and, for the combined
+        arm, the news + chart policy), at the executable quote then (ask for a buy, bid for a
+        sell) plus 1 spread of adverse slippage. The slippage can put the fill up to one spread
+        beyond the zone edge; that is deliberate and recorded. Never the best price in the zone.
+        Undelivered, expired or invalidated signals never get a new fill."""
         pp = sig["paper"]
         if pp["state"] == "waiting":
             earliest = _dt(sig["sent_at"]) + timedelta(seconds=self.cfg.human_latency_seconds)
-            if sig["status"] != "valid":
+            if sig["status"] != "valid" or not _tracked(sig):
                 pp.update(state="missed", reason=f"alert {sig['status']} before a fill was possible")
                 self.store.write("paper_missed", id=sig["id"], reason=pp["reason"])
-            elif q is not None and now >= earliest:
+            elif q is not None and now >= earliest and q.tradeable \
+                    and q.age(now) <= self.cfg.max_quote_age_seconds:
                 d = 1 if s.direction == LONG else -1
-                fill = rules.executable(s.direction, q.bid, q.ask) + d * q.spread
+                px = rules.executable(s.direction, q.bid, q.ask)
+                fill = px + d * q.spread
                 deadline = min(now + timedelta(hours=self.cfg.max_hold_hours),
                                rules.weekly_close(now) - timedelta(minutes=15))
                 pp.update(state="open", entry=round(fill, 4), entry_time=_iso(now),
-                          quote_time=_iso(q.time), deadline=_iso(deadline),
-                          risk=max(abs(fill - s.stop), q.spread), mfe=0.0, mae=0.0, t1=False,
-                          last_checked=_iso(now))
+                          quote_time=_iso(q.time), quote_bid=q.bid, quote_ask=q.ask,
+                          quote_age_s=round(q.age(now), 2), executable=px,
+                          beyond_zone=round(max(0.0, (fill - s.zone_hi) if d == 1 else (s.zone_lo - fill)), 4),
+                          deadline=_iso(deadline), risk=max(abs(fill - s.stop), q.spread),
+                          mfe=0.0, mae=0.0, t1=False, last_checked=_iso(now),
+                          rules=PAPER_RULES_VERSION)
                 self.store.write("paper_fill", id=sig["id"], entry=pp["entry"], at=_iso(now),
-                                 bid=q.bid, ask=q.ask)
+                                 bid=q.bid, ask=q.ask, quote_time=_iso(q.time),
+                                 quote_age_s=pp["quote_age_s"], beyond_zone=pp["beyond_zone"],
+                                 paper_rules=PAPER_RULES_VERSION)
             return
         if pp["state"] != "open" or q is None:
             return
         if now - _dt(pp["last_checked"]) > timedelta(seconds=60):
-            self.catch_up(sig, now)
+            if not self.catch_up(sig, now):
+                return  # not reconciled: keep last_checked, retry on a later tick
             if pp["state"] != "open":
                 return
-        self.paper_price(sig, s, q.bid, q.ask, q.bid, q.ask, now)
+        if not q.tradeable or q.age(now) > self.cfg.max_quote_age_seconds:
+            return  # a stale or non-tradeable quote is not an executable price
+        px = q.bid if s.direction == LONG else q.ask   # exit side: sell at bid, buy back at ask
+        self.paper_price(sig, s, px, px, q.bid, q.ask, now, live=True)
         pp["last_checked"] = _iso(now)
 
-    def paper_price(self, sig, s: Setup, lo_exit, hi_exit, open_bid, open_ask, now,
-                    bar_open: tuple | None = None):
-        """Check stop, 2R target and time exit on one price observation.
+    def paper_price(self, sig, s: Setup, lo_exit, hi_exit, close_bid, close_ask, now,
+                    bar_open: tuple | None = None, live: bool = False):
+        """Check stop, 2R target and time exit on one exit-side price observation.
 
-        For a quote, lo/hi are the bid (long) or ask (short) itself. For a 1-minute candle
-        they are its low/high on the exit side; the stop is assumed hit first if both are.
+        lo/hi are exit-side prices only (bid for a long, ask for a short): for a live quote
+        both are that one price; for a 1-minute candle its low/high on the exit side. If one
+        candle touches both stop and target, the stop is assumed first. Stop fills (adverse):
+        - live quote at or through the stop: that executable price minus 1 spread (a poll can
+          miss the moment the stop was crossed, so the stop price itself is not assumed);
+        - candle that opens through the stop: the open minus 1 spread;
+        - otherwise: the stop minus 1 spread.
+        Targets fill at the target price once the exit-side price reaches it.
         """
         pp, d = sig["paper"], (1 if s.direction == LONG else -1)
-        spread = open_ask - open_bid
+        spread = close_ask - close_bid
         worst = lo_exit if d == 1 else hi_exit
         best = hi_exit if d == 1 else lo_exit
         pp["mfe"] = max(pp["mfe"], (best - pp["entry"]) * d / pp["risk"])
@@ -684,18 +840,20 @@ class Monitor:
         if (best - t1) * d >= 0:
             pp["t1"] = True
         if (worst - s.stop) * d <= 0:
-            if bar_open is not None and (bar_open[0] - s.stop) * d <= 0:
-                px = bar_open[0] - d * spread  # gapped through the stop
+            if live:
+                px, how = worst - d * spread, "live price through the stop"
+            elif bar_open is not None and (bar_open[0] - s.stop) * d <= 0:
+                px, how = bar_open[0] - d * spread, "candle opened through the stop"
             else:
-                px = s.stop - d * spread
-            return self.paper_exit(sig, px, now, "stop")
+                px, how = s.stop - d * spread, "stop touched"
+            return self.paper_exit(sig, px, now, "stop", how)
         if (best - sig["plan"]["t2"]) * d >= 0:
-            return self.paper_exit(sig, sig["plan"]["t2"], now, "target 2R")
+            return self.paper_exit(sig, sig["plan"]["t2"], now, "target 2R", "exit-side price reached target")
         if now >= _dt(pp["deadline"]):
-            px = open_bid if d == 1 else open_ask
-            return self.paper_exit(sig, px, now, "time")
+            px = close_bid if d == 1 else close_ask
+            return self.paper_exit(sig, px, now, "time", "exit-side price at the time limit")
 
-    def paper_exit(self, sig: dict, px: float, now: datetime, reason: str):
+    def paper_exit(self, sig: dict, px: float, now: datetime, reason: str, how: str = ""):
         pp = sig["paper"]
         d = 1 if sig["setup"]["direction"] == LONG else -1
         gross = (px - pp["entry"]) * d
@@ -704,37 +862,54 @@ class Monitor:
         net = gross - fin
         net *= (1 - self.cfg.fx_loss_pct / 100) if net > 0 else (1 + self.cfg.fx_loss_pct / 100)
         pp.update(state="closed", exit=round(px, 4), exit_time=_iso(now), exit_reason=reason,
-                  gross_r=round(gross / pp["risk"], 3), net_r=round(net / pp["risk"], 3))
-        self.store.write("paper_exit", id=sig["id"], exit=pp["exit"], reason=reason,
+                  exit_basis=how, gross_r=round(gross / pp["risk"], 3), net_r=round(net / pp["risk"], 3))
+        self.store.write("paper_exit", id=sig["id"], exit=pp["exit"], reason=reason, basis=how,
                          gross_r=pp["gross_r"], net_r=pp["net_r"], mfe_r=round(pp["mfe"], 3),
-                         mae_r=round(pp["mae"], 3), touched_t1=pp["t1"])
+                         mae_r=round(pp["mae"], 3), touched_t1=pp["t1"],
+                         paper_rules=pp.get("rules", "paper-v1"), data_gap=pp.get("data_gap", False))
 
-    def catch_up(self, sig: dict, now: datetime):
-        """Replay 1-minute bid/ask candles since the last check (after a restart or gap)."""
+    def catch_up(self, sig: dict, now: datetime) -> bool:
+        """Replay completed 1-minute bid/ask candles since the last reconciled time (after a
+        restart or a gap). Returns False when the data could not be fetched; then the last
+        reconciled time is NOT advanced. Missing minutes while the market should be open are
+        recorded as a data gap on the paper record."""
         pp, s = sig["paper"], _setup(sig["setup"])
         since = _dt(pp["last_checked"])
         minutes = int((now - since).total_seconds() // 60) + 2
         try:
             bars = self.client.candles(self.cfg.instrument, "M1", min(5000, max(minutes, 2)))
         except Exception as exc:
-            self.store.write("catch_up_error", id=sig["id"], error=str(exc)[:200])
-            return
+            self.store.write("catch_up_error", id=sig["id"], error=str(exc)[:200],
+                             since=_iso(since))
+            return False
         long_ = s.direction == LONG
-        for b in bars:
+        cursor = since
+        for b in sorted(bars, key=lambda b: b["time"]):
             end = b["time"] + timedelta(minutes=1)
-            if b["time"] < since or not b["complete"]:
+            if end <= since or not b["complete"]:
                 continue
+            gap = (b["time"] - cursor).total_seconds() / 60
+            if gap > 2 and not rules.market_closed_by_clock(cursor + timedelta(minutes=1)):
+                pp["data_gap"] = True
+                self.store.write("catch_up_gap", id=sig["id"], start=_iso(cursor),
+                                 end=_iso(b["time"]), minutes=round(gap, 1))
             lo, hi = (b["bid_l"], b["bid_h"]) if long_ else (b["ask_l"], b["ask_h"])
             opn = (b["bid_o"] if long_ else b["ask_o"],)
             self.paper_price(sig, s, lo, hi, b["bid_c"], b["ask_c"], min(end, now), bar_open=opn)
             pp["last_checked"] = _iso(end)
+            cursor = end
             if pp["state"] != "open":
-                return
+                return True
+        if (now - cursor).total_seconds() > 120 and not rules.market_closed_by_clock(cursor):
+            pp["data_gap"] = True
+            self.store.write("catch_up_gap", id=sig["id"], start=_iso(cursor), end=_iso(now),
+                             minutes=round((now - cursor).total_seconds() / 60, 1))
+        return True
 
     def directional_marks(self, sig: dict, q: Quote, now: datetime):
         """Forecast check: signed mid move at +60 and +240 min, in daily-ATR units, for every
         delivered alert whether or not a paper fill happened."""
-        if not sig.get("delivered") or q.age(now) > self.cfg.max_quote_age_seconds:
+        if not _tracked(sig) or q.age(now) > self.cfg.max_quote_age_seconds:
             return
         d = 1 if sig["setup"]["direction"] == LONG else -1
         for m in MARKS:

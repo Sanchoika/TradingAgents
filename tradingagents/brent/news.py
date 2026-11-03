@@ -38,7 +38,36 @@ UA = {"User-Agent": "tradingagents-brent-newscheck/1 (personal research; alerts 
 SUPPORT_HOURS = 6      # supportive news must be this recent (holding period is 8h)
 CONFLICT_HOURS = 24    # conflicting news blocks for longer: caution is asymmetric
 FEED_FRESH_MINUTES = 10
-MIN_FRESH_FEEDS = 2    # a "fresh check" needs at least this many feeds polled OK recently
+# Coverage is counted by source function. Only general news searches count as a news check:
+# official data files (EIA) are logged but never certify "no material news".
+MIN_GENERAL_NEWS_FEEDS = 2
+MIN_FRESH_FEEDS = MIN_GENERAL_NEWS_FEEDS   # backwards-compatible name
+ANALYSIS_BASIS = "headline_and_snippet"    # the model never sees publisher article text
+EIA_NOTE = ("EIA WPSR files are logged by version and time but not interpreted: there is no "
+            "reliable consensus expectation, so no inventory surprise is claimed and they never "
+            "count as news coverage. The Wednesday release window is a blackout instead.")
+
+
+def source_function(feed: str) -> str:
+    if feed.startswith("eia:"):
+        return "official_data"
+    if feed.startswith(("google:", "yahoo")):
+        return "general_news"
+    return "other"
+
+
+def coverage(feeds: dict, now: datetime) -> dict:
+    """Which feeds were polled OK within FEED_FRESH_MINUTES, grouped by source function."""
+    fresh = sorted(f for f, v in feeds.items() if v.get("last_ok") and
+                   now - datetime.fromisoformat(v["last_ok"]) < timedelta(minutes=FEED_FRESH_MINUTES))
+    by_fn: dict[str, list[str]] = {}
+    for f in fresh:
+        by_fn.setdefault(source_function(f), []).append(f)
+    news_ok = len(by_fn.get("general_news", [])) >= MIN_GENERAL_NEWS_FEEDS
+    return {"fresh_feeds": fresh, "fresh_by_function": by_fn,
+            "general_news_fresh": len(by_fn.get("general_news", [])),
+            "general_news_required": MIN_GENERAL_NEWS_FEEDS,
+            "fresh_check": news_ok}
 
 GOOGLE_QUERIES = {
     "google:brent": "Brent crude",
@@ -190,6 +219,7 @@ class NewsCollector:
     def poll(self) -> list[Item]:
         """One pass over every feed. Returns the items first seen in this pass."""
         new: list[Item] = []
+        self.st["last_poll_at"] = _iso(self.now())   # heartbeat, even when every feed fails
         for feed, fn in self.sources():
             f = self.st["feeds"].setdefault(feed, {"ok": 0, "fail": 0})
             t0 = time.monotonic()
@@ -213,10 +243,13 @@ class NewsCollector:
         return new
 
     def _register(self, it: Item) -> bool:
-        tn = norm_title(it.title) if not it.feed.startswith("eia:") else it.title
-        key = hashlib.sha256((it.link or tn).encode()).hexdigest()[:16]
+        eia = it.feed.startswith("eia:")
+        tn = norm_title(it.title) if not eia else it.title
+        # Mutable official files keep one URL across releases and revisions: the content
+        # version (in the title) is part of their identity.
+        key = hashlib.sha256(((it.link + "#" + tn) if eia else (it.link or tn)).encode()).hexdigest()[:16]
         same = self.st["seen"].get(key) or next(
-            (v for v in self.st["seen"].values() if v["title_norm"] == tn), None)
+            (v for v in self.st["seen"].values() if v["title_norm"] == tn and not eia), None)
         if same is not None:
             feeds = same.setdefault("feeds", [])
             if it.feed not in feeds:  # the same story through another feed: count it once
@@ -227,6 +260,8 @@ class NewsCollector:
         it.key, it.first_seen = key, _iso(now)
         it.cluster = key
         for k, v in self.st["seen"].items():
+            if eia:
+                break
             if similar(tn, v["title_norm"]) >= 0.7 and \
                     now - datetime.fromisoformat(v["first_seen"]) < timedelta(hours=48):
                 it.repeat_of, it.cluster = k, v["cluster"]
@@ -255,16 +290,14 @@ class NewsCollector:
             # "words" of script), not the publisher article: never count that as readable.
             redirect = host.endswith("news.google.com") or host.endswith("consent.google.com")
             self.write("content_check", key=it.key, status=r.status_code, host=host, words=words,
-                       paywall_hint=paywall, aggregator_redirect=redirect)
+                       paywall_hint=paywall, aggregator_redirect=redirect,
+                       note="link reachability only; fetched text is not analysed")
         except Exception as exc:
             self.write("content_check", key=it.key, status=None, error=str(exc)[:160])
 
     def feed_health(self) -> dict:
-        """Which feeds were polled successfully within FEED_FRESH_MINUTES."""
-        now = self.now()
-        fresh = [f for f, v in self.st["feeds"].items() if v.get("last_ok") and
-                 now - datetime.fromisoformat(v["last_ok"]) < timedelta(minutes=FEED_FRESH_MINUTES)]
-        return {"fresh_feeds": sorted(fresh), "fresh_check": len(fresh) >= MIN_FRESH_FEEDS}
+        """Fresh feeds by source function; fresh_check needs enough general news feeds."""
+        return coverage(self.st["feeds"], self.now())
 
 
 # ------------------------------------------------------------------ AI reading
@@ -352,8 +385,12 @@ def news_state(classified: list[tuple[dict, dict]], health: dict, analysis_ok: b
     """Aggregate to one state. Support needs material news <= SUPPORT_HOURS old; conflict
     counts material news <= CONFLICT_HOURS old. 'none_material' requires a fresh check."""
     if not analysis_ok or not health["fresh_check"]:
-        return {"state": "unavailable", "why": "analysis failed" if not analysis_ok else
-                f"only {len(health['fresh_feeds'])} feeds polled OK in {FEED_FRESH_MINUTES} min"}
+        return {"state": "unavailable",
+                "status": "analysis_failed" if not analysis_ok else "missing_coverage",
+                "why": "analysis failed" if not analysis_ok else
+                f"only {health.get('general_news_fresh', len(health['fresh_feeds']))} general news "
+                f"feeds polled OK in {FEED_FRESH_MINUTES} min (need {MIN_GENERAL_NEWS_FEEDS}; "
+                "EIA files do not count)"}
     sup = {b: [i["key"] for c, i in classified if c["bias"] == b and is_material(c, i, now, SUPPORT_HOURS)]
            for b in ("bullish", "bearish")}
     con = {b: [i["key"] for c, i in classified if c["bias"] == b and is_material(c, i, now, CONFLICT_HOURS)]
@@ -429,23 +466,40 @@ def default_model(provider: str = "chatgpt", model: str = "gpt-6-luna") -> Calla
     return call
 
 
+def _events(collector) -> list[dict]:
+    p = collector.log_path
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()] \
+        if p.exists() else []
+
+
+def pending_items(collector, events: list[dict] | None = None) -> list[dict]:
+    """Recent news items (not EIA) with no classification yet, oldest first."""
+    now = collector.now()
+    events = _events(collector) if events is None else events
+    done = {c["key"] for e in events if e["event"] == "analysis" for c in e.get("parsed") or []}
+    items = [e for e in events if e["event"] == "item" and not e["feed"].startswith("eia:")
+             and now - datetime.fromisoformat(e["first_seen"]) < timedelta(hours=CONFLICT_HOURS)]
+    return sorted((i for i in items if i["key"] not in done), key=lambda i: i["first_seen"])
+
+
 def analyze(collector: NewsCollector, model: Callable, budget: Budget,
             max_items: int = 20) -> dict:
-    """Classify items first seen in the last CONFLICT_HOURS that have no classification yet.
-    Logs inputs, model id, prompt hash, raw output, parse result, latency, usage and the
-    aggregate news state. Any failure -> state 'unavailable'."""
+    """Classify the oldest pending batch (items first seen in the last CONFLICT_HOURS with no
+    classification yet), so a backlog is worked through instead of abandoned. Logs inputs,
+    model id, prompt hash, raw output, parse result, latency, usage and the aggregate news
+    state. Any failure -> state 'unavailable'. The model sees headlines and RSS snippets only."""
     now = collector.now()
-    events = [json.loads(x) for x in collector.log_path.read_text().splitlines() if x.strip()] \
-        if collector.log_path.exists() else []
-    done = {c["key"] for e in events if e["event"] == "analysis" for c in e.get("parsed") or []}
+    events = _events(collector)
     calls = [e["ts"] for e in events if e["event"] == "analysis" and e.get("called")]
     items = [e for e in events if e["event"] == "item" and not e["feed"].startswith("eia:")
              and now - datetime.fromisoformat(e["first_seen"]) < timedelta(hours=CONFLICT_HOURS)]
-    pending = [i for i in items if i["key"] not in done][-max_items:]
+    backlog = pending_items(collector, events)
+    pending = backlog[:max_items]
     health = collector.feed_health()
     base = {"prompt_version": PROMPT_VERSION, "prompt_hash": prompt_hash(),
             "model": getattr(model, "model_id", "custom"), "health": health,
-            "item_keys": [i["key"] for i in pending]}
+            "basis": ANALYSIS_BASIS, "item_keys": [i["key"] for i in pending],
+            "backlog": len(backlog)}
     if not pending:
         return collector.write("analysis", called=False, note="no new items", **base)
     refusal = budget.refusal(calls, now)
@@ -547,38 +601,61 @@ _VIEW_CACHE: dict = {}
 def news_view(folder: str | Path, now: datetime) -> dict:
     """Current news state for the price monitor, recomputed from the news log (no model call).
 
-    Freshness windows are applied at ``now``, so support expires on time. Any item first seen
-    in the last CONFLICT_HOURS that has not been classified makes the state 'unavailable':
-    the monitor never acts on news it has not analysed.
+    Freshness windows are applied at ``now``, so support expires on time. ``status`` keeps the
+    reasons apart: checked (sources checked; the state says what was found), collector_missing,
+    collector_stale (no poll attempt for FEED_FRESH_MINUTES), missing_coverage (too few general
+    news feeds OK), pending_analysis (recent items not classified yet, e.g. budget or quiet
+    window) and analysis_failed (the last call for the pending items failed). Anything other
+    than "checked" gives state "unavailable": the monitor never acts on news it has not seen
+    and analysed.
     """
     folder = Path(folder)
     log, state_path = folder / "news.jsonl", folder / "news_state.json"
     if not log.exists() or not state_path.exists():
-        return {"state": "unavailable", "why": "news check not running (no news log)", "items": []}
+        return {"state": "unavailable", "status": "collector_missing",
+                "why": "news check not running (no news log)", "items": [], "basis": ANALYSIS_BASIS}
     mt = (log.stat().st_mtime, state_path.stat().st_mtime)
     if _VIEW_CACHE.get("key") != (str(folder), mt):
         events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x.strip()]
         _VIEW_CACHE.update(key=(str(folder), mt), events=events,
                            st=json.loads(state_path.read_text(encoding="utf-8")))
     events, st = _VIEW_CACHE["events"], _VIEW_CACHE["st"]
-    fresh = [f for f, v in st.get("feeds", {}).items() if v.get("last_ok") and
-             now - datetime.fromisoformat(v["last_ok"]) < timedelta(minutes=FEED_FRESH_MINUTES)]
-    health = {"fresh_feeds": sorted(fresh), "fresh_check": len(fresh) >= MIN_FRESH_FEEDS}
+    health = coverage(st.get("feeds", {}), now)
     items = {e["key"]: e for e in events if e["event"] == "item" and not e["feed"].startswith("eia:")
              and now - datetime.fromisoformat(e["first_seen"]) < timedelta(hours=CONFLICT_HOURS)
              and datetime.fromisoformat(e["first_seen"]) <= now}
     cls = {}
+    last_call = None
     for e in events:
         if e["event"] == "analysis":
             for c in e.get("parsed") or []:
                 cls[c["key"]] = c
+            if e.get("called"):
+                last_call = e
     pending = [k for k in items if k not in cls]
     last_poll = max((v.get("last_ok") or "" for v in st.get("feeds", {}).values()), default="")
-    base = {"health": health, "last_poll": last_poll, "n_items": len(items),
+    last_attempt = st.get("last_poll_at") or last_poll
+    base = {"health": health, "last_poll": last_poll, "last_poll_attempt": last_attempt,
+            "n_items": len(items), "basis": ANALYSIS_BASIS, "official_data_note": EIA_NOTE,
             "last_first_seen": max((i["first_seen"] for i in items.values()), default="")}
+
+    def unavailable(status: str, why: str) -> dict:
+        return {**base, "state": "unavailable", "status": status, "why": why, "items": []}
+
+    if not last_attempt or now - datetime.fromisoformat(last_attempt) > timedelta(minutes=FEED_FRESH_MINUTES):
+        return unavailable("collector_stale", f"no news poll since {last_attempt or 'start'} "
+                           "(news collector stopped or stuck)")
+    if not health["fresh_check"]:
+        return unavailable("missing_coverage", f"only {health['general_news_fresh']} general news "
+                           f"feeds polled OK in {FEED_FRESH_MINUTES} min (need "
+                           f"{MIN_GENERAL_NEWS_FEEDS}; EIA files do not count)")
     if pending:
-        return {**base, "state": "unavailable", "items": [],
-                "why": f"{len(pending)} recent items not analysed yet"}
+        failed = last_call is not None and last_call.get("error") and \
+            set(pending) & set(last_call.get("item_keys") or [])
+        if failed:
+            return unavailable("analysis_failed", f"{len(pending)} recent items not analysed; last "
+                               f"model call failed: {last_call['error'][:120]}")
+        return unavailable("pending_analysis", f"{len(pending)} recent items not analysed yet")
     pairs = [(cls[k], items[k]) for k in items]
     out = news_state(pairs, health, True, now)
     material = []
@@ -592,4 +669,4 @@ def news_view(folder: str | Path, now: datetime) -> dict:
                                  "window": tag})
                 break
     material.sort(key=lambda m: m["published"] or m["first_seen"], reverse=True)
-    return {**base, **out, "items": material}
+    return {**base, **out, "status": "checked", "items": material}

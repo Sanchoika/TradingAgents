@@ -82,8 +82,21 @@ not start when you read the message. The alert is valid only while **all** of th
 1. It has not expired.
 2. The executable price (ask to buy, bid to sell) is inside the entry zone.
 3. The spread is at most `max_spread` (0.08).
-4. The setup has not been invalidated.
-5. The quote is under 10 s old.
+4. The setup has not been invalidated (a 15-min close beyond the invalidation level).
+5. The quote is under 10 s old and the market is tradeable.
+6. For a combined (BR-) alert: the news + chart policy still approves the same direction.
+   The news state is re-read from the news log on every poll (no model call inside the
+   window). If news becomes unavailable, stale, unanalysed or contradictory, or the chart
+   no longer has room, the alert gets a SKIP and no paper fill can happen.
+
+New entry suggestions also need fresh chart data: the latest completed 15-min candle must
+have been processed successfully within 18 min, and the last candle refresh must not have
+failed. A failed refresh blocks new entries (logged, plus one ops notice per 30 min).
+Ages and the usable-time check are recomputed after the slow network and news work, just
+before the decision.
+
+SKIP and EXPIRED cancel the **entry suggestion only**. Each says so: no broker order or
+position was changed, and if you already entered, it does not close your trade.
 
 Immediately before sending, the monitor takes a fresh quote and re-runs every check. It
 suppresses the alert if the quote fails any of them, or if less than 30 s would be left
@@ -132,19 +145,34 @@ Every alert is written to the journal **before** it is sent, with:
 The journal records every outcome: delivered or failed, SKIP, EXPIRED, missed, fill and exit.
 Losing and missed signals are never dropped.
 
-The hypothetical fill rules are:
-- **Earliest fill:** 20 s after Telegram accepted the alert, and only while the alert is
-  still valid.
+The hypothetical fill rules are `paper-v2` (from 2026-11-03; earlier records are
+`paper-v1`, kept unchanged, labelled "may be affected" and never pooled with v2):
+- **Earliest fill:** 20 s after the notify command accepted the alert (for a signal that was
+  not sent: 20 s after the decision), only while the alert is still valid (zone, spread,
+  fresh tradeable quote and, for BR-, the news + chart policy). Undelivered, expired and
+  invalidated signals never get a fill.
 - **Fill price:** the executable quote at that moment (ask to buy, bid to sell) plus 1 spread
-  of slippage. It is never the best price in the zone.
-- **Stop:** fills 1 spread worse than the stop. A gap through the stop fills at the bar open
-  minus 1 spread.
-- **2R target:** fills at the target.
+  of adverse slippage. It is never the best price in the zone. The slippage can put the fill
+  up to one spread beyond the zone edge; that is deliberate and recorded as `beyond_zone`.
+  The quote used (bid, ask, time, age) is recorded with each fill.
+- **Exit side:** a long exits at the bid, a short at the ask. A live bid/ask pair is never
+  treated as a candle's low/high.
+- **Stop:** live quote at or through the stop: that executable price minus 1 spread (a poll
+  can miss the moment the stop was crossed, so the stop price itself is not assumed). Replay
+  candle that opens through the stop: the open minus 1 spread. Otherwise the stop minus
+  1 spread. If one candle touches both stop and target, the stop counts first.
+- **2R target:** fills at the target once the exit-side price reaches it.
 - **Time exit:** at the bid (long) or ask (short).
+- **Setup invalidation after entry:** none. A 15-min close beyond the invalidation level
+  cancels an open entry suggestion, but an entered paper trade exits only at the stop, the
+  2R target or the time limit (the alert says the same).
+- **Stale or non-tradeable quotes** never trigger a paper exit.
 - **Costs:** financing at 45%/yr on either side, and the CAD conversion gap (winners x 0.99,
   losers x 1.01).
-- **After a restart:** an open paper trade replays the 1-minute bid/ask candles it missed,
-  and the stop is assumed to hit first.
+- **After a restart or gap:** an open paper trade replays the completed 1-minute bid/ask
+  candles it missed. If that request fails, the last reconciled time is not advanced and
+  nothing is concluded from live prices until the replay succeeds. Missing minutes while the
+  market should be open are logged and the trade is labelled `data_gap`.
 
 Results are reported in four separate parts:
 1. **Operational:** delivery, freshness, suppressions.
@@ -152,8 +180,14 @@ Results are reported in four separate parts:
 3. **Hypothetical paper trading:** in R, after costs.
 4. **Manual results:** only what you record with `manual`.
 
-A hypothetical fill is never treated as an order you placed. No edge is claimed from a
-handful of alerts or from a trade count alone.
+Reports keep groups apart by experiment version, arm (combined vs chart-only), label
+(chart-led vs news-supported), sent vs not sent, and paper-rules version, for directional
+marks and paper P&L alike. "Sent" means the notify command accepted it; when your phone
+showed it is not measured. A signal that was not sent is never called delivered.
+
+A hypothetical fill is never treated as an order you placed. No fixed trade count and no
+simple confidence interval is proof of an edge: signals overlap in time and share news and
+market exposure, so resampled intervals are descriptive only.
 
 ## 6. Sizing and positions
 
@@ -199,23 +233,34 @@ Decided 09:00:00 ET (14:00:00 UTC). Rules brent-v1 cfg c1484be01af2. Paper track
 
 ## 8. Running it
 
-The monitor runs on **hermes-server**, because Brent trades nearly 24 hours a day and the
-laptop sleeps. It runs in its own tmux window, the same way as the old tbot. The OANDA
-practice token is typed at a hidden prompt when the monitor starts. It is never saved or
-printed. If `OANDA_API_KEY` is already in the environment, the monitor uses it.
+Two processes run on **hermes-server** (Brent trades nearly 24 hours a day and the laptop
+sleeps), each in its own tmux window and each holding a lock so a second copy refuses to
+start (exit code 3):
+- `brentnews`: the news collector (`news-check --analyze`). It runs **until stopped**;
+  `--minutes N` or `--once` are only for bounded tests. It retries pending classifications
+  after a quiet window, budget refusal or failed call (backoff up to 30 min after failures),
+  and sends one `[BRENT OPS]` notice per 30 min if the price monitor stops or stalls.
+- `brent`: the price monitor (`run`). It watches the news collector's heartbeat and coverage
+  and sends one `[BRENT OPS]` notice per 30 min if the collector stops, goes stale or loses
+  coverage; entry alerts then wait (WATCH).
+
+The OANDA practice token is typed at a hidden prompt when the monitor starts. It is never
+saved or printed. If `OANDA_API_KEY` is already in the environment, the monitor uses it.
 
 ```bash
 ssh -t hermes-server
-cd ~/TradingAgents && cp brent.example.toml brent.toml   # once; set site_dir if wanted
-. .venv/bin/activate
-python -m tradingagents.brent --config brent.toml check          # read-only facts
-python -m tradingagents.brent --config brent.toml feasibility --send-test
-tmux new -s brent
-python -m tradingagents.brent --config brent.toml run            # type the token; Ctrl+B then D
+bash ~/ta-brent/scripts/brent_activate.sh   # clean restart of both; writes brent.toml if missing
+tmux attach -t brent                        # type the token; Ctrl+B then D
 ```
 
-- **Status:** `python -m tradingagents.brent --config brent.toml status` (offline, reads saved state).
-- **Stop:** `python -m tradingagents.brent --config brent.toml stop`, or Ctrl+C in the tmux window.
+`alerts_enabled` in `brent.toml` is re-read every 60 s, so alerts can be switched on or off
+(shadow mode) **without a restart**. The switch is logged and announced with one
+`[BRENT STATUS]` message. Every other setting needs a restart.
+
+- **Stop:** `... stop` (monitor) or `... stop --news` (collector): a clean SIGTERM.
+- **Status:** `python -m tradingagents.brent --config brent.toml status` (offline). The first
+  line is `overall: OK` only when the monitor ticks, chart data refreshes, the news collector
+  runs and news coverage is fresh; otherwise `overall: DEGRADED:` with the reasons.
 - **Results:** `... report`. Record what you actually did with
   `... manual BR-20261103-001 --entered --price 110.22 --units 5` or `... manual <id> --skipped`.
 - **Status page:** `~/.tradingagents/brent/brent.html`, plus `<site_dir>/index.html` when
@@ -242,8 +287,17 @@ time. It then recovers any windows and paper trades left from before a restart.
 - The token must be typed again after a server restart (by design: unattended start would
   mean storing the token, which is your decision).
 - The rules are untested hypotheses. Months of forward data are needed before any judgment.
+- News coverage currently depends on one aggregator (Google News searches); Yahoo returns
+  nothing for BZ=F/CL=F. If Google fails, coverage is missing and alerts wait (WATCH).
+- The model sees headlines and RSS snippets only, never publisher article text. Article
+  "content checks" only test whether a link opens (Google links land on a redirect page).
+- EIA files are logged by version but not interpreted (no reliable consensus expectations).
+- If the server reboots, both processes stop and nothing sends a notice (each watches the
+  other, not the machine). The status page and `status` show it.
+- The OANDA client only has GET methods and uses the practice host; that does not make the
+  token itself read-only at the broker.
 
-## 10. News + chart decision layer (phase 1: checks only)
+## 10. News + chart decision layer
 
 On 2026-11-03 Irakli asked that decisions combine news analysis with chart analysis.
 The design is in the Claude Doc "Brent assistant: revised decision design". Phase 1
@@ -298,8 +352,16 @@ Everything goes to `news.jsonl`:
 - **fresh, for support:** published, or first seen if there is no publish time, within 6h.
   That is inside the 8h holding period. Older supportive news never authorises a new trade.
 - **fresh, for conflict:** within 24h. Opposing material news blocks for longer.
-- **fresh check:** at least 2 feeds were polled successfully in the last 10 min, and the
-  analysis succeeded.
+- **fresh check (coverage by source function):** at least 2 **general news** feeds (Google
+  News searches, Yahoo) polled successfully in the last 10 min, and every recent item has
+  been analysed. EIA files are official data: they are logged by content version (a new
+  release or revision at the same URL is a new item) but never count as a news check and
+  are not interpreted.
+- **news status** (kept apart in the log, the status page and each decision): `checked`
+  (sources checked; the state says what was found, e.g. `none_material`),
+  `collector_missing`, `collector_stale` (no poll attempt in 10 min), `missing_coverage`,
+  `pending_analysis` (e.g. quiet window or budget), `analysis_failed`. Anything but
+  `checked` means WATCH.
 
 ### Policy
 
@@ -366,3 +428,29 @@ chart with the zone, stop, targets and levels, the news table and the full decis
 
 Telegram acceptance time is what gets measured. When your phone showed the message is not
 measured.
+
+## 12. Experiment identity and the 2026-11-03 audit
+
+Every signal and every monitor start carries a manifest: experiment version
+(`brent-exp-2`), setup rules (`brent-v1`, unchanged), chart policy (`chart-v1`), news policy
+(`news-policy-v2`), paper rules (`paper-v2`), code commit, model id, prompt hash, config hash
+and the news/model settings. Reports group by experiment, so earlier records (no manifest)
+never pool with new ones. Strategy parameters, the 100-120 range, risk settings and model
+budgets did not change.
+
+The independent audit of e10d2f3 (2026-11-02) found ten issues. Each was reproduced first
+(the seven supplied probes all failed on e10d2f3) and is now covered by tests:
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | News not rechecked inside the entry window | Confirmed, fixed (SKIP + no fill) |
+| 2 | Failed chart refresh still allowed entries | Confirmed, fixed (fresh processed candle required) |
+| 3 | Two EIA files counted as news coverage | Confirmed, fixed (coverage by source function) |
+| 4 | Paper targets used the wrong quote side | Confirmed, fixed (bid for longs, ask for shorts) |
+| 5 | Live stop gaps filled at the stop | Confirmed, fixed (adverse executable price) |
+| 6 | Updated EIA file at the same URL ignored | Confirmed, fixed (content version in identity) |
+| 7 | Pending analysis retried only on new items | Confirmed, fixed (retry + backoff, oldest first) |
+| 8 | News collector stopped after 72 h | Confirmed (server ran `--minutes 4320`), fixed (continuous) |
+| 9 | Experiment identity incomplete | Confirmed, fixed (manifest) |
+| 10 | Directional marks pooled across arms | Confirmed, fixed (grouped; shadow never "delivered") |
+| - | Windows sender test asserted Linux behaviour | Confirmed, test corrected |

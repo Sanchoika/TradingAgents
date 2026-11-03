@@ -121,7 +121,7 @@ def cmd_run(args, cfg) -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     try:
-        mon = Monitor(cfg, _client(cfg), store, _sender(cfg))
+        mon = Monitor(cfg, _client(cfg), store, _sender(cfg), cfg_path=getattr(args, "config", None))
         print(f"Brent monitor {RULES_VERSION} cfg {cfg.config_hash()} journal {store.dir}. "
               "Alerts only, no orders. Ctrl+C to stop.", flush=True)
         mon.startup()
@@ -151,31 +151,37 @@ def cmd_run(args, cfg) -> int:
 
 
 def _pages(cfg, store, state, locked, write_page):
-    paths = [write_page(state, store.events(), locked, Path(cfg.journal_dir) / "brent.html")]
+    from .report import news_health
+
+    nh = news_health(cfg.journal_dir)
+    paths = [write_page(state, store.events(), locked, Path(cfg.journal_dir) / "brent.html", news=nh)]
     if cfg.site_dir:
-        paths.append(write_page(state, store.events(), locked, Path(cfg.site_dir) / "index.html"))
+        paths.append(write_page(state, store.events(), locked, Path(cfg.site_dir) / "index.html",
+                                news=nh))
     return paths
 
 
 def cmd_status(args, cfg) -> int:
-    from .report import status_lines
+    from .report import news_health, status_lines
 
     store = Store(cfg.journal_dir)
-    print("\n".join(status_lines(store.state(), store.is_locked())))
+    print("\n".join(status_lines(store.state(), store.is_locked(), news=news_health(cfg.journal_dir))))
     return 0
 
 
 def cmd_stop(args, cfg) -> int:
-    store = Store(cfg.journal_dir)
+    """Clean stop (SIGTERM) of the price monitor, or of the news collector with --news."""
+    name = "news collector" if getattr(args, "news", False) else "monitor"
+    store = Store(Path(cfg.journal_dir) / "newscheck") if name != "monitor" else Store(cfg.journal_dir)
     if not store.is_locked():
-        print("no Brent monitor is running")
+        print(f"no Brent {name} is running")
         return 0
     pid = int(store.lock_path.read_text().strip() or "0")
     if not pid:
-        print("monitor is running but its PID is unknown; stop it in its window (Ctrl+C)")
+        print(f"{name} is running but its PID is unknown; stop it in its window (Ctrl+C)")
         return 1
     os.kill(pid, signal.SIGTERM)
-    print(f"sent stop to Brent monitor (pid {pid})")
+    print(f"sent stop to Brent {name} (pid {pid})")
     return 0
 
 
@@ -211,38 +217,97 @@ def cmd_manual(args, cfg) -> int:
 
 
 def cmd_news_check(args, cfg) -> int:
-    """Phase 1: collect and timestamp news, optionally classify with the bounded model.
-    Logs only; sends no Telegram message and changes no decision."""
-    from .news import Budget, NewsCollector, analyze, default_model
+    """News collector: poll feeds and classify pending items with the bounded model.
+
+    Runs until stopped (production) unless --once or --minutes N (bounded test). Pending
+    items are retried on later polls even when nothing new arrives (after a quiet window,
+    budget refusal or failed call), with exponential backoff after failures. It also watches
+    the price monitor's heartbeat and sends one [BRENT OPS] notice per 30 min if it stopped.
+    """
+    from . import news
 
     lock = Store(Path(cfg.journal_dir) / "newscheck")
     try:
         lock.acquire()
     except AlreadyRunning as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {exc}. Only one Brent news collector may run.", file=sys.stderr)
         return 3
-    col = NewsCollector(cfg.journal_dir)
-    model = default_model(cfg.llm_provider, cfg.llm_model) if args.analyze else None
-    budget = Budget(cfg.llm_per_hour, cfg.llm_per_day, tuple(cfg.llm_quiet_et))
-    end = time.monotonic() + args.minutes * 60
+    def _term(*_):
+        raise KeyboardInterrupt
+
+    try:
+        old_term = signal.signal(signal.SIGTERM, _term)
+    except ValueError:  # not in the main thread (tests)
+        old_term = None
+    col = news.NewsCollector(cfg.journal_dir)
+    model = news.default_model(cfg.llm_provider, cfg.llm_model) if args.analyze else None
+    budget = news.Budget(cfg.llm_per_hour, cfg.llm_per_day, tuple(cfg.llm_quiet_et))
+    end = time.monotonic() + args.minutes * 60 if args.minutes else None
+    retry, fails, next_try = True, 0, 0.0   # True at start: pick up items left pending
+    watch = _MonitorWatch(cfg)
     try:
         while True:
             new = col.poll()
             line = f"{datetime.now(UTC):%H:%M:%S} new items {len(new)}; {col.feed_health()}"
-            if model and new:
-                res = analyze(col, model, budget)
-                line += f"; analysis: {res.get('state', {}).get('state', res.get('note'))}"
+            if model and (new or retry) and time.monotonic() >= next_try:
+                res = news.analyze(col, model, budget)
+                line += f"; analysis: {(res.get('state') or {}).get('state', res.get('note'))}"
                 if res.get("refused") or res.get("error"):
                     line += f" ({res.get('refused') or res.get('error')})"
+                left = (res.get("backlog") or 0) - len(res.get("item_keys") or [])
+                retry = bool(res.get("refused") or res.get("error") or left > 0)
+                if res.get("error"):
+                    fails += 1
+                    delay = min(1800.0, cfg.news_poll_seconds * 2 ** fails)
+                    next_try = time.monotonic() + delay
+                    line += f"; retry in {delay / 60:.0f} min"
+                elif res.get("called"):
+                    fails, next_try = 0, 0.0
+            watch.check()
             print(line, flush=True)
-            if args.once or time.monotonic() >= end:
+            if args.once or (end is not None and time.monotonic() >= end):
                 break
             time.sleep(cfg.news_poll_seconds)
     except KeyboardInterrupt:
         pass
     finally:
         lock.release()
+        if old_term is not None:
+            signal.signal(signal.SIGTERM, old_term)
     return 0
+
+
+class _MonitorWatch:
+    """The news collector's view of the price monitor: lock held and a recent tick."""
+
+    STALE_S = 120
+    REPEAT_S = 1800
+
+    def __init__(self, cfg):
+        self.cfg, self.last_sent = cfg, 0.0
+
+    def problem(self) -> str:
+        store = Store(self.cfg.journal_dir)
+        if not store.is_locked():
+            return "the Brent price monitor is not running"
+        tick = (store.state() or {}).get("last_tick")
+        if tick:
+            age = (datetime.now(UTC) - datetime.fromisoformat(tick)).total_seconds()
+            if age > self.STALE_S:
+                return f"the Brent price monitor's last tick was {age:.0f}s ago (stuck?)"
+        return ""
+
+    def check(self):
+        if not self.cfg.notify_command:
+            return
+        try:
+            why = self.problem()
+            if why and time.monotonic() - self.last_sent > self.REPEAT_S:
+                self.last_sent = time.monotonic()
+                _sender(self.cfg)(f"[BRENT OPS] {why}. No entry alerts while it is down. "
+                                  "Restart: bash ~/ta-brent/scripts/brent_activate.sh")
+        except Exception as exc:  # the watch must never stop news collection
+            print(f"monitor watch failed: {exc}", file=sys.stderr)
 
 
 def cmd_news_report(args, cfg) -> int:
@@ -262,7 +327,8 @@ def main(argv=None) -> int:
     f.add_argument("--send-test", action="store_true", help="send one [BRENT TEST] message")
     sub.add_parser("run", help="start the monitor (foreground; one instance only)")
     sub.add_parser("status", help="show the monitor's saved state (offline)")
-    sub.add_parser("stop", help="stop a running monitor")
+    st = sub.add_parser("stop", help="stop the running monitor (or --news: the news collector)")
+    st.add_argument("--news", action="store_true", help="stop the news collector instead")
     sub.add_parser("report", help="results in four separate parts")
     sub.add_parser("dashboard", help="write the read-only status page")
     m = sub.add_parser("manual", help="record what you did with a signal")
@@ -274,10 +340,11 @@ def main(argv=None) -> int:
     m.add_argument("--units", type=float)
     m.add_argument("--result", type=float, help="realised P&L in account currency, if closed")
     m.add_argument("--note", default="")
-    n = sub.add_parser("news-check", help="phase 1: collect news (+ --analyze); logs only")
-    n.add_argument("--once", action="store_true")
-    n.add_argument("--minutes", type=float, default=60.0)
-    n.add_argument("--analyze", action="store_true", help="classify new items (bounded model)")
+    n = sub.add_parser("news-check", help="news collector (+ --analyze): runs until stopped")
+    n.add_argument("--once", action="store_true", help="one poll, then exit (test)")
+    n.add_argument("--minutes", type=float, default=0.0,
+                   help="stop after this many minutes (bounded test run); 0 = run until stopped")
+    n.add_argument("--analyze", action="store_true", help="classify pending items (bounded model)")
     sub.add_parser("news-report", help="feed delays, gaps, duplicates, content access, model use")
     args = p.parse_args(argv)
     from .client import OandaReadError
