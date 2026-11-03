@@ -26,15 +26,19 @@ def _client(cfg):
 
 def _sender(cfg):
     """Telegram through the existing notify command (e.g. hermes); console when unset."""
-    from tradingagents.demo.notes import notify
+    import subprocess
 
     def send(text: str) -> tuple[bool, float]:
         t0 = time.monotonic()
         if not cfg.notify_command:
             print(f"\n{text}\n", flush=True)
             return True, time.monotonic() - t0
-        code = notify(cfg.notify_command, text, timeout=60)
-        return code == 0, time.monotonic() - t0
+        # Own session: the notify tool can't signal (e.g. Ctrl+C) the monitor's process group.
+        r = subprocess.run(cfg.notify_command, shell=True, input=text, text=True, timeout=60,
+                           capture_output=True, start_new_session=(os.name != "nt"))
+        if r.returncode:
+            print(f"notify exit {r.returncode}: {(r.stderr or r.stdout)[-300:]}", file=sys.stderr)
+        return r.returncode == 0, time.monotonic() - t0
 
     return send
 
@@ -111,8 +115,9 @@ def cmd_run(args, cfg) -> int:
         return 3
     stopping = {"flag": False}
 
-    def _stop(*_):
+    def _stop(signum, _frame):
         stopping["flag"] = True
+        stopping["why"] = f"signal {signum}"
 
     signal.signal(signal.SIGTERM, _stop)
     try:
@@ -133,11 +138,15 @@ def cmd_run(args, cfg) -> int:
 
         mon.run(stop=lambda: stopping["flag"], on_tick=on_tick)
     except KeyboardInterrupt:
-        pass
+        stopping["why"] = "KeyboardInterrupt (Ctrl+C or SIGINT)"
+    except Exception as exc:
+        stopping["why"] = f"{type(exc).__name__}: {exc}"[:300]
+        raise
     finally:
-        store.write("stop")
+        why = stopping.get("why", "stop requested")
+        store.write("stop", reason=why)
         store.release()
-        print("Brent monitor stopped.")
+        print(f"Brent monitor stopped: {why}", flush=True)
     return 0
 
 

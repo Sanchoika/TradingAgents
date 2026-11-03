@@ -127,7 +127,9 @@ class Monitor:
             except OandaReadError:
                 pass
             sleep(1)
+        self.save()
         self.send(messages.start_text(RULES_VERSION, self.cfg.config_hash(), account_line), "start")
+        self.save()
         self.save()
 
     def recover(self, now: datetime):

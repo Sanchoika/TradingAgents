@@ -590,3 +590,31 @@ def test_cmd_run_builds_the_monitor(tmp_path, monkeypatch):
     monkeypatch.setattr(Monitor, "startup", lambda self: None)
     monkeypatch.setattr(Monitor, "run", lambda self, stop, on_tick: ran.append(True))
     assert cli.cmd_run(None, cfg) == 0 and ran == [True]
+
+
+def test_cmd_run_records_why_it_stopped(tmp_path, monkeypatch):
+    from tradingagents.brent import __main__ as cli
+
+    cfg = BrentConfig(journal_dir=str(tmp_path))
+    monkeypatch.setattr(cli, "_client", lambda c: FakeClient(lambda: datetime.now(UTC)))
+    monkeypatch.setattr(cli, "_sender", lambda c: (lambda text: (True, 0.1)))
+    monkeypatch.setattr(Monitor, "startup", lambda self: (_ for _ in ()).throw(KeyboardInterrupt))
+    assert cli.cmd_run(None, cfg) == 0
+    stop = [e for e in Store(str(tmp_path)).events() if e["event"] == "stop"][-1]
+    assert stop["reason"].startswith("KeyboardInterrupt")
+
+
+def test_sender_runs_notify_in_own_session(tmp_path, monkeypatch):
+    import subprocess
+
+    from tradingagents.brent import __main__ as cli
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, _ = cli._sender(BrentConfig(journal_dir=str(tmp_path), notify_command="true"))("hi")
+    assert ok and seen["input"] == "hi" and seen["start_new_session"] is True
