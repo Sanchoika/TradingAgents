@@ -1,4 +1,9 @@
-# Phone control page (prepared, not installed)
+# Phone control page (installed 2026-11-05)
+
+Live at `https://hermes-server.taildb3e4d.ts.net:8443/` (tailnet only) as `brent-control.service`.
+`allowed_users` is Irakli's Tailscale login. Checked at install: no identity header gives 403, another login
+gives 403, Irakli's gives 200. `restart_news_command = "systemctl restart brent-news"`.
+Undo: `systemctl disable --now brent-control; tailscale serve --https=8443 off`.
 
 A small page for your phone: current status of Brent and the stock demo, and three recovery buttons.
 

@@ -1,7 +1,14 @@
-# Hosting Brent on hermes-server (prepared, not installed)
+# Hosting Brent on hermes-server (installed 2026-11-05)
 
-Status 2026-11-05: Brent runs in two tmux sessions (`brent` monitor, news collector). A crash or
-reboot leaves them stopped. The files in `deploy/systemd/` replace tmux with supervised services.
+**Installed 2026-11-05 ~04:32 UTC.** `brent-monitor`, `brent-news`, `brent-health.timer` (local check every 60 s)
+and `brent-control` run as enabled systemd units; the tmux sessions are gone (only `tbot` remains). The token
+is in `/etc/tradingagents/brent.env` (root, 600), so restarts need no retype. The units put `/root/.local/bin`
+on PATH (PR #25): without it `hermes send` failed with exit 127 and alerts were silently not delivered.
+`/etc/tradingagents/heartbeat-url` is empty, so there is no external heartbeat yet (decision 2 below).
+A full host reboot has not been tested.
+
+Before 2026-11-05: Brent ran in two tmux sessions (`brent` monitor, news collector). A crash or
+reboot left them stopped. The files in `deploy/systemd/` replace tmux with supervised services.
 **Decision 1 (stored token) approved by Irakli 2026-11-05;** decision 2 (external heartbeat account) is still open. Install with `deploy/install-brent-services.sh` (needs a terminal: Irakli types the token at the hidden prompt). Note: an OANDA practice token cannot be scoped read-only; Brent's code never places orders, but the token itself could, so it is practice-only and revocable.
 
 ## 1. How the OANDA practice token survives a reboot (needs approval)
