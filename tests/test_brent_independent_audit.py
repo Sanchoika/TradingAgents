@@ -87,7 +87,7 @@ def test_pending_analysis_retried_without_another_new_story(tmp_path, monkeypatc
     col = Collector()
     monkeypatch.setattr(news, 'NewsCollector', lambda *a: col)
     monkeypatch.setattr(news, 'default_model', lambda *a: object())
-    def analyze(*a):
+    def analyze(*a, **kw):
         calls.append(1)
         return {'refused':'quiet window'} if len(calls) == 1 else {'state':{'state':'bullish'}}
     monkeypatch.setattr(news, 'analyze', analyze)

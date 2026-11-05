@@ -256,7 +256,8 @@ def cmd_news_check(args, cfg) -> int:
         old_term = None
     col = news.NewsCollector(cfg.journal_dir)
     model = news.default_model(cfg.llm_provider, cfg.llm_model) if args.analyze else None
-    budget = news.Budget(cfg.llm_per_hour, cfg.llm_per_day, tuple(cfg.llm_quiet_et))
+    budget = news.Budget(cfg.llm_per_hour, cfg.llm_per_day, tuple(cfg.llm_quiet_et),
+                         reserve_urgent=cfg.llm_reserve_urgent)
     end = time.monotonic() + args.minutes * 60 if args.minutes else None
     retry, fails, next_try = True, 0, 0.0   # True at start: pick up items left pending
     watch = _MonitorWatch(cfg)
@@ -265,12 +266,13 @@ def cmd_news_check(args, cfg) -> int:
             new = col.poll()
             line = f"{datetime.now(UTC):%H:%M:%S} new items {len(new)}; {col.feed_health()}"
             if model and (new or retry) and time.monotonic() >= next_try:
-                res = news.analyze(col, model, budget)
+                res = news.analyze(col, model, budget, batch_wait_s=news.BATCH_WAIT_S)
                 line += f"; analysis: {(res.get('state') or {}).get('state', res.get('note'))}"
                 if res.get("refused") or res.get("error"):
                     line += f" ({res.get('refused') or res.get('error')})"
                 left = (res.get("backlog") or 0) - len(res.get("item_keys") or [])
-                retry = bool(res.get("refused") or res.get("error") or left > 0)
+                retry = bool(res.get("refused") or res.get("error") or left > 0
+                             or "batching" in (res.get("note") or ""))
                 if res.get("error"):
                     fails += 1
                     delay = min(1800.0, cfg.news_poll_seconds * 2 ** fails)
