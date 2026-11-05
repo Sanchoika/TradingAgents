@@ -625,3 +625,33 @@ def test_hold_is_exactly_five_sessions_and_counts_holidays():
     assert not sessions.exit_due("2026-11-23", "2026-11-27", 5)
     assert sessions.exit_due("2026-11-23", "2026-11-30", 5)
     assert sessions.covered("2026-11-03") and not sessions.covered("2032-01-02")
+
+
+def test_early_read_removes_market_move_and_calls_checkpoints():
+    import pandas as pd
+
+    from tradingagents.demo.report import early_read
+
+    days = pd.bdate_range("2026-01-02", periods=60)
+
+    def bars(symbol, as_of):
+        step = {"SPY": 1.0, "UP": 2.0, "FLAT": 1.0}[symbol]   # FLAT moves exactly with the market
+        return pd.DataFrame({"Date": days, "Open": [100.0 + step * i for i in range(60)]})
+
+    ds = [d.date().isoformat() for d in days[:30]]
+    skilled = [{"ticker": "UP", "trade_date": d, "rating": "Buy"} for d in ds] + \
+              [{"ticker": "FLAT", "trade_date": d, "rating": "Underweight"} for d in ds]
+    out = early_read(skilled, bars, hold_days=5, today="2026-04-01")
+    assert out["scored"] == 60 and out["checkpoint"] == 50 and out["days"] == 30
+    assert out["conviction"]["mild_mean_pct"] == 0.0    # FLAT short: no edge once SPY is removed
+    assert out["long_minus_short_same_day"]["days"] == 30 and out["long_minus_short_same_day"]["mean_pct"] > 0
+    assert out["call"].startswith("promising")
+
+    wrong = [{"ticker": "UP", "trade_date": d, "rating": "Sell"} for d in ds[:25]]
+    bad = early_read(wrong, bars, hold_days=5, today="2026-04-01")
+    assert bad["checkpoint"] == 20 and bad["mean_excess_pct"] < 0 and bad["call"].startswith("stop")
+
+    few = early_read(wrong[:5], bars, hold_days=5, today="2026-04-01")
+    assert few["call"] == "too early" and few["checkpoint"] is None
+    hold = early_read([{"ticker": "UP", "trade_date": ds[0], "rating": "Hold"}], bars, today="2026-04-01")
+    assert hold["scored"] == 0 and hold["call"] == "too early"
