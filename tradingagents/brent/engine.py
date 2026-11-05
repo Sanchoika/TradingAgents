@@ -91,6 +91,7 @@ class Monitor:
         st.setdefault("metrics", {"send_s": [], "quote_age_s": [], "tick_s": []})
         st.setdefault("suppressed_logged", {})
         st.setdefault("account", {})
+        st.setdefault("watches", {})
         st["rules"], st["config_hash"] = RULES_VERSION, self.cfg.config_hash()
 
     def save(self):
@@ -268,6 +269,7 @@ class Monitor:
             if reason:
                 prev = s["status"]
                 s["status"] = "invalidated"
+                s["end_reason"] = reason
                 self.store.write("setup_end", key=s["key"], status="invalidated", reason=reason)
                 if prev == "alerted":
                     for sig in self.st["signals"].values():
@@ -280,6 +282,7 @@ class Monitor:
             for other in self.st["setups"].values():
                 if other["level_name"] == s.level_name and other["status"] == "armed":
                     other["status"] = "invalidated"
+                    other["end_reason"] = f"opposite setup {s.kind} {s.direction} armed"
                     self.store.write("setup_end", key=other["key"], status="invalidated",
                                      reason=f"opposite setup {s.kind} {s.direction} armed")
             self.st["seen_keys"].append(s.key)
@@ -327,6 +330,8 @@ class Monitor:
         self.expire_setups(now)
         if q is not None:
             self.try_alerts(q, self.now())
+            self.notify_watches(q, self.now())
+        self.end_watches(self.now())
         self._metric("tick_s", time.monotonic() - t0)
         self.save()
 
@@ -403,6 +408,7 @@ class Monitor:
         for s in self.st["setups"].values():
             if s["status"] == "armed" and now >= _dt(s["expires_at"]):
                 s["status"] = "expired"
+                s["end_reason"] = "the arming window ended without an entry"
                 self.store.write("setup_end", key=s["key"], status="expired")
         # Drop finished setups older than a day from state (the journal keeps them).
         cutoff = now - timedelta(days=1)
@@ -457,6 +463,85 @@ class Monitor:
                 continue
             self.issue(s, sd, arm="combined", assessment=a)
             return
+
+    # ------------------------------------------------------------ WATCH notices
+    def watch_state(self, s: Setup, q: Quote, now: datetime) -> tuple[str, str, dict]:
+        """(category, blocker sentence, assessment). Category is the material state: it, not the
+        poll, decides whether a new WATCH message is sent. 'ready' means ENTRY may follow."""
+        a = self.assess(s, q, now)
+        if not rules.in_zone(s, q.bid, q.ask):
+            px = "ask" if s.direction == LONG else "bid"
+            now_px = q.ask if s.direction == LONG else q.bid
+            return "price", (f"price not in the entry zone yet ({px} {now_px:.2f}, zone "
+                             f"{s.zone_lo:.2f}-{s.zone_hi:.2f})"), a
+        if a["policy"]["action"] != s.direction:
+            return f"news:{a['policy']['row']}", f"news/chart policy says {a['policy']['action']} " \
+                f"({a['policy']['row']})", a
+        other = rules.entry_blockers(s, q.bid, q.ask, q.time, q.tradeable, now, self.cfg)
+        stale = self.chart_problem(now)
+        if stale:
+            other.append(stale)
+        other += self.global_blockers(now)
+        if other:
+            return "checks", "entry checks not all passing: " + "; ".join(other[:3]), a
+        return "ready", "none: all checks pass, an ENTRY message may follow", a
+
+    def notify_watches(self, q: Quote, now: datetime):
+        """One WATCH per setup per material state change. A WATCH creates no signal and no paper
+        fill. Only for new suggestions inside the operating range and only with alerts on."""
+        if not (self.cfg.alerts_enabled and self.cfg.watch_alerts) or not q.tradeable \
+                or q.age(now) > self.cfg.max_quote_age_seconds:
+            return
+        if self.cfg.alerts_enabled and not (self.cfg.range_low <= q.mid <= self.cfg.range_high):
+            return
+        for sd in self.st["setups"].values():
+            if sd["status"] != "armed":
+                continue
+            s = _setup(sd)
+            if s.zone_lo < self.cfg.range_low or s.zone_hi > self.cfg.range_high:
+                continue
+            cat, blocker, a = self.watch_state(s, q, now)
+            if cat == "ready":
+                continue  # try_alerts owns the ENTRY decision
+            w = self.st["watches"].get(s.key)
+            tag = re.sub(r"[-+]?\d[\d.]*", "#", cat)
+            if w and w["tag"] == tag:
+                continue
+            if w and now - _dt(w["sent_at"]) < timedelta(seconds=self.cfg.watch_min_gap_seconds):
+                continue
+            if not w:
+                self.st["seq_watch"] = self.st.get("seq_watch", 0) + 1
+                w = {"id": f"BW-{rules.ny(now):%Y%m%d}-{self.st['seq_watch']:03d}", "ended": False}
+                self.st["watches"][s.key] = w
+            ex = self.explain(s, a, w["id"])
+            first = "tag" not in w
+            text = messages.watch_text(w["id"], sd, q.mid, blocker, ex["news_line"], ex["chart_line"],
+                                       first)
+            ok, secs, _ = self.send(text, "watch", w["id"])
+            w.update(tag=tag, sent_at=_iso(now), accepted=ok)
+            self.store.write("watch_notice", id=w["id"], key=s.key, state=cat, blocker=blocker,
+                             accepted=ok, first=first)
+
+    def end_watches(self, now: datetime):
+        """UPDATE/CANCEL for a WATCH whose setup ended; a setup that became an ENTRY just links."""
+        for key, w in self.st["watches"].items():
+            if w.get("ended") or "tag" not in w:
+                continue
+            sd = self.st["setups"].get(key)
+            status = sd["status"] if sd else "expired"
+            if status == "armed":
+                continue
+            w["ended"] = True
+            if status == "alerted":
+                sig = next((x for x in self.st["signals"].values()
+                            if x["setup"]["key"] == key and x.get("arm") == "combined"), None)
+                w["entry_id"] = sig["id"] if sig else ""
+                self.store.write("watch_end", id=w["id"], key=key, outcome="entry", entry_id=w["entry_id"])
+                continue
+            reason = (sd or {}).get("end_reason") or "the setup is no longer on the chart"
+            self.store.write("watch_end", id=w["id"], key=key, outcome=status, reason=reason)
+            if self.cfg.alerts_enabled and self.cfg.watch_alerts:
+                self.send(messages.watch_end_text(w["id"], now, reason), "watch", w["id"])
 
     def assess(self, s: Setup, q: Quote, now: datetime) -> dict:
         """Chart record (code) + news state (from the news log, no model call) + policy."""
@@ -582,6 +667,9 @@ class Monitor:
                        notice="not sent: chart-only comparison arm" if arm != "combined"
                        else "not sent: alerts disabled")
             return
+        w = self.st["watches"].get(s.key)
+        if w and w.get("tag"):
+            sig["from_watch"] = w["id"]
         text = messages.alert_text(sig, {"max_spread": self.cfg.max_spread,
                                          "max_hold_hours": self.cfg.max_hold_hours})
         ok, secs, done = self.send(text, "alert", sig_id)

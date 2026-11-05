@@ -76,6 +76,8 @@ class BrentConfig:
     llm_per_day: int = 250
     llm_quiet_et: list[str] = field(default_factory=lambda: ["07:30", "10:30"])  # morning bot
     news_poll_seconds: int = 180
+    watch_alerts: bool = True        # send WATCH / WATCH-cancelled notices (never an entry instruction)
+    watch_min_gap_seconds: int = 300  # min time between WATCH messages for one setup
 
     # Telegram alerts for the combined arm. False = decisions are logged and paper-tracked
     # but nothing is sent (used until the readiness checks pass).
@@ -108,7 +110,7 @@ class BrentConfig:
 
 
 EXPERIMENT_FIELDS = ("llm_provider", "llm_model", "llm_per_hour", "llm_per_day", "llm_quiet_et",
-                     "news_poll_seconds", "alerts_enabled")
+                     "news_poll_seconds", "alerts_enabled", "watch_alerts")
 
 
 def code_commit() -> str:

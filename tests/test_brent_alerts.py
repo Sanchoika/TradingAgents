@@ -484,7 +484,9 @@ def test_conflicting_news_blocks_but_chart_only_arm_records(tmp_path):
     clock.advance(25)
     mon.tick()  # the shadow trade is paper-tracked, never messaged
     assert any(e["event"] == "paper_fill" and e["id"] == "SH-20261103-001" for e in store.events())
-    assert sender.texts == []
+    # Only one WATCH (the blocker is the conflicting news); the shadow trade is never messaged.
+    assert len(sender.texts) == 1 and sender.texts[0].startswith("[BRENT WATCH]")
+    assert "NOT AN ENTRY" in sender.texts[0] and "conflict" in sender.texts[0]
 
 
 def test_news_unavailable_or_failing_means_watch(tmp_path):
@@ -648,3 +650,78 @@ def test_range_80_115_inclusive_boundaries_use_mid_and_zone():
     assert narrow_lo.range_low <= (79.98 + 80.02) / 2 <= narrow_lo.range_high
     assert not (narrow_lo.range_low <= (79.96 + 80.0) / 2 <= narrow_lo.range_high)
     assert not (narrow_lo.range_low <= (115.0 + 115.04) / 2 <= narrow_lo.range_high)
+
+
+# ----------------------------------------------------------- WATCH lifecycle
+def watches(sender):
+    return [t for t in sender.texts if t.startswith("[BRENT WATCH]")]
+
+
+def arm_setup(mon, client, clock):
+    """Arm a LONG breakout at 110 (zone 110.00-110.30) with price still outside the zone."""
+    client.bid, client.ask = 111.50, 111.53
+    client.m15 = m15(110.5, high=110.6, low=109.8, end=clock.t)
+    mon.tick()
+
+
+def test_one_watch_per_state_then_entry_links_to_it(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    arm_setup(mon, client, clock)
+    assert len(watches(sender)) == 1 and alerts(sender) == []
+    w = watches(sender)[0]
+    assert "BW-20261103-001" in w and "NOT AN ENTRY" in w and "price not in the entry zone" in w
+    assert "Next confirmation" in w and "News (headlines/snippets only)" in w and "Chart:" in w
+    assert mon.st["signals"] == {} or all(x.get("arm") != "combined" for x in mon.st["signals"].values())
+    for _ in range(5):               # same state on later polls: no repeat
+        clock.advance(10)
+        mon.tick()
+    assert len(watches(sender)) == 1
+    client.bid, client.ask = 110.17, 110.20      # enters the zone with all checks passing
+    clock.advance(10)
+    mon.tick()
+    assert len(alerts(sender)) == 1 and "follows WATCH BW-20261103-001" in alerts(sender)[0]
+    assert "| ENTRY |" in alerts(sender)[0]
+    clock.advance(10)
+    mon.tick()
+    assert not [t for t in sender.texts if "CANCELLED" in t]       # linked, not cancelled
+    ev = store.events()
+    assert any(e["event"] == "watch_end" and e["outcome"] == "entry" for e in ev)
+    assert not any(e["event"] == "paper_fill" and e["id"].startswith("BW") for e in ev)
+
+
+def test_watch_is_cancelled_when_the_setup_breaks(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    arm_setup(mon, client, clock)
+    assert len(watches(sender)) == 1
+    clock.advance(1900)
+    client.m15 = m15(109.6, high=110.0, low=109.5, end=clock.t)   # closes back through the level
+    mon.tick()
+    cancel = [t for t in sender.texts if "CANCELLED" in t]
+    assert len(cancel) == 1 and "BW-20261103-001" in cancel[0] and "no order was placed" in cancel[0]
+    clock.advance(10)
+    mon.tick()
+    assert len([t for t in sender.texts if "CANCELLED" in t]) == 1
+
+
+def test_watch_not_sent_outside_range_or_with_alerts_off(tmp_path):
+    mon, client, sender, clock, _ = make(tmp_path, range_low=80, range_high=105)
+    arm_setup(mon, client, clock)
+    assert watches(sender) == []
+    mon2, client2, sender2, clock2, _ = make(tmp_path / "b", alerts_enabled=False)
+    arm_setup(mon2, client2, clock2)
+    assert sender2.texts == []
+
+
+def test_news_blocker_change_sends_one_watch_update(tmp_path):
+    bear = {**SUPPORT_ITEM, "bias": "bearish", "window": "conflict"}
+    conflict = {**NO_NEWS, "conflict_window": {"bearish": ["k1"]}, "items": [bear]}
+    nf = NewsFake(conflict)
+    mon, client, sender, clock, _ = make(tmp_path, news_view=nf)
+    client.bid, client.ask = 110.17, 110.20
+    client.m15 = m15(110.5, high=110.6, low=109.8, end=clock.t)
+    mon.tick()
+    assert len(watches(sender)) == 1 and "conflict" in watches(sender)[0]
+    nf.view = dict(NO_NEWS)                       # conflict resolves: ready -> ENTRY, no 2nd WATCH
+    clock.advance(400)
+    mon.tick()
+    assert len(watches(sender)) == 1 and len(alerts(sender)) == 1
