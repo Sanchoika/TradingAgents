@@ -333,3 +333,34 @@ def test_analyze_writes_call_started_and_can_batch_wait(tmp_path):
     assert res["called"]
     started = [e for e in events(col) if e["event"] == "call_started"]
     assert len(started) == 1 and res["call_id"] == started[0]["call_id"]
+
+
+def test_source_backoff_is_per_source_and_recovers(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from tradingagents.brent import news
+
+    assert [news.backoff_seconds(n) for n in (1, 2, 3, 4, 9)] == [0, 0, 60, 120, 900]
+    clock = [datetime(2026, 11, 5, 12, tzinfo=UTC)]
+    calls = {"a": 0, "b": 0}
+    c = news.NewsCollector(tmp_path, get=lambda u: None, now=lambda: clock[0], yahoo=None)
+    bad = {"on": True}
+
+    def a():
+        calls["a"] += 1
+        if bad["on"]:
+            raise OSError("x")
+        return []
+
+    def b():
+        calls["b"] += 1
+        return []
+    c.sources = lambda: [("a", a), ("b", b)]
+    for _ in range(4):
+        c.poll()
+        clock[0] += timedelta(seconds=30)
+    assert calls["b"] == 4 and calls["a"] == 3     # 4th pass skipped: backing off
+    bad["on"] = False
+    clock[0] += timedelta(minutes=5)
+    c.poll()
+    assert c.st["feeds"]["a"]["streak"] == 0 and c.st["feeds"]["a"]["next_try"] is None
