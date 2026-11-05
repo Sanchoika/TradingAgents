@@ -1,0 +1,9 @@
+# Phone control page (python -m tradingagents.control --config control.toml serve).
+# Listens on localhost only; Tailscale Serve puts HTTPS in front and adds the caller's identity.
+allowed_users = ["you@example.com"]        # your Tailscale login; nobody else can use it
+brent_toml = "/root/ta-brent/brent.toml"
+brent_journal = "~/.tradingagents/brent"
+# demo_journal = ""                        # set once the stock runner is hosted here
+restart_news_command = "systemctl restart brent-news"   # the only command this page can run
+audit_path = "~/.tradingagents/control/audit.jsonl"
+port = 8787

@@ -1,0 +1,16 @@
+[Unit]
+Description=Trading phone control page (localhost only; Tailscale Serve in front)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/ta-brent
+Environment=PYTHONPATH=/root/ta-brent
+ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.control --config /root/ta-brent/control.toml serve
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
