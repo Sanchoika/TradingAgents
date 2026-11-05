@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import chart, messages, news, rules
 from .client import OandaReadError, Quote
-from .config import PAPER_RULES_VERSION, RULES_VERSION, BrentConfig, manifest
+from .config import PAPER_RULES_VERSION, RULES_VERSION, BrentConfig, code_commit, manifest
 from .rules import LONG, Setup
 from .store import Store
 
@@ -93,6 +93,15 @@ class Monitor:
         st.setdefault("account", {})
         st.setdefault("watches", {})
         st["rules"], st["config_hash"] = RULES_VERSION, self.cfg.config_hash()
+        c = self.cfg
+        st["effective"] = {
+            "experiment": manifest(c, "x")["experiment"], "range": [c.range_low, c.range_high],
+            "range_convention": "mid-price gate; entry zone must also lie inside the range",
+            "validity_seconds": c.validity_seconds, "max_spread": c.max_spread,
+            "alerts_enabled": c.alerts_enabled, "watch_alerts": c.watch_alerts,
+            "llm_per_hour": c.llm_per_hour, "llm_per_day": c.llm_per_day,
+            "llm_quiet_et": list(c.llm_quiet_et), "code_commit": code_commit(),
+            "phone_display": "not measured (only notify-command acceptance is)"}
 
     def save(self):
         self.st["seen_keys"] = self.st["seen_keys"][-200:]

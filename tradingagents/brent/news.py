@@ -451,6 +451,32 @@ class Budget:
         return None
 
 
+def budget_usage(folder: str | Path, now: datetime, per_hour: int, per_day: int,
+                 quiet: tuple[str, str]) -> dict:
+    """Model-call use from the news log: hourly, daily, refusals and the quiet window, separately."""
+    path = Path(folder) / "news.jsonl"
+    ev = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()] \
+        if path.exists() else []
+    an = [(datetime.fromisoformat(e["ts"]), e) for e in ev if e["event"] == "analysis"]
+    called = [t for t, e in an if e.get("called")]
+    tokens = sum(((e.get("usage") or {}).get("total_tokens") or 0) for t, e in an
+                 if e.get("called") and now - t < timedelta(days=1))
+    refused: dict[str, int] = {}
+    for t, e in an:
+        if e.get("refused") and now - t < timedelta(days=1):
+            kind = e["refused"].split(" (")[0].split(" 0")[0]
+            kind = "hourly cap" if kind.startswith("hourly") else (
+                "daily cap" if kind.startswith("daily") else "quiet window")
+            refused[kind] = refused.get(kind, 0) + 1
+    lat = sorted(e["latency_s"] for t, e in an if e.get("called") and e.get("latency_s") is not None
+                 and now - t < timedelta(days=1))
+    return {"hour": sum(now - t < timedelta(hours=1) for t in called), "per_hour": per_hour,
+            "day": sum(now - t < timedelta(days=1) for t in called), "per_day": per_day,
+            "quiet_window_et": f"{quiet[0]}-{quiet[1]} weekdays", "refusals_24h": refused,
+            "tokens_24h": tokens, "latency_median_s": lat[len(lat) // 2] if lat else None,
+            "note": "calls, not money; tokens are reported usage, not a bill or remaining quota"}
+
+
 def default_model(provider: str = "chatgpt", model: str = "gpt-6-luna") -> Callable[[str, str], tuple]:
     """Existing repo integration (ChatGPT plan sign-in by default). Returns (text, usage)."""
     from tradingagents.llm_clients.factory import create_llm_client

@@ -725,3 +725,36 @@ def test_news_blocker_change_sends_one_watch_update(tmp_path):
     clock.advance(400)
     mon.tick()
     assert len(watches(sender)) == 1 and len(alerts(sender)) == 1
+
+
+def test_progression_counts_unique_setups_and_primary_blockers(tmp_path):
+    from tradingagents.brent.report import progression
+
+    mon, client, sender, clock, store = make(tmp_path)
+    arm_setup(mon, client, clock)                       # detected, zone never reached
+    for _ in range(4):
+        clock.advance(10)
+        mon.tick()
+    p = progression(store.events())
+    assert p["setups_detected"] == 1 and p["entry_zone_reached"] == 0
+    assert p["notification_accepted"] == 0 and p["watch_messages_sent"] == 1
+    assert p["primary_blocker_of_setups_not_notified"] == {"entry zone never reached (no setup lost)": 1}
+    client.bid, client.ask = 110.17, 110.20
+    clock.advance(10)
+    mon.tick()
+    p = progression(store.events())
+    assert (p["entry_zone_reached"], p["evidence_ready"], p["entry_checks_passed"],
+            p["notification_accepted"], p["watch_to_entry"]) == (1, 1, 1, 1, 1)
+    assert "phone display is not measured" in p["denominators"]
+
+
+def test_status_shows_effective_settings_and_budget(tmp_path):
+    from tradingagents.brent.report import news_health, status_lines
+
+    mon, client, sender, clock, store = make(tmp_path)
+    mon.tick()
+    nh = news_health(mon.cfg.journal_dir, clock.t, cfg=mon.cfg)
+    txt = "\n".join(status_lines(store.state(), True, clock.t, news=nh))
+    assert "operating range 80-115" in txt and "mid-price gate" in txt
+    assert "model budget (shared, rolling): 0/12 last hour, 0/250 last 24h" in txt
+    assert "phone display: not measured" in txt
