@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from datetime import date
+from pathlib import Path
 
 from .config import load_config
 from .journal import Journal
@@ -62,6 +63,17 @@ def _check_llm_key(cfg) -> None:
 
 
 def cmd_run(args, cfg) -> int:
+    from .lock import RunLock, RunLocked
+
+    try:
+        with RunLock(Path(cfg.journal_dir) / "run.lock", stale_after=6 * 3600):
+            return _run_locked(args, cfg)
+    except RunLocked as exc:  # a second writer must never touch the account
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+
+
+def _run_locked(args, cfg) -> int:
     from .runner import fixed_analyzer, run_once, tradingagents_analyzer
 
     try:
@@ -180,9 +192,9 @@ def cmd_report(args, cfg) -> int:
     journal = Journal(cfg.journal_dir)
     spread = {str(e["trade_id"]): float(e.get("half_spread_cost") or 0)
               for e in journal.events() if e["event"] == "open" and e.get("trade_id")}
+    # Read-only: settling fills and stops is done by `run` (which journals each event once).
+    # Reporting must not move the account, so it scores what has been settled so far.
     broker = _broker(cfg)
-    if hasattr(broker, "sync"):
-        broker.sync()
     closed = broker.our_closed_trades()
     # The paper account records the spread it charged per trade; spread is its half per side.
     spread.update({str(t["id"]): t["spread_cost"] / 2 for t in closed if "spread_cost" in t})

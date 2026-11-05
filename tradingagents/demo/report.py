@@ -40,7 +40,19 @@ def summarize(trades: list[dict], spread_cost: dict[str, float], n_random: int =
     means = sorted(statistics.fmean(rng.choices(pnl, k=n)) for _ in range(n_random))
     ci = (means[int(0.025 * n_random)], means[int(0.975 * n_random) - 1])
 
+    # Dependence: trades opened on the same day share market moves, so also resample whole days.
+    days: dict[str, list[float]] = {}
+    for t, p in zip(trades, pnl, strict=False):
+        days.setdefault(str(t.get("opened", "")), []).append(p)
+    groups = list(days.values())
+    day_means = sorted(
+        statistics.fmean([p for g in rng.choices(groups, k=len(groups)) for p in g])
+        for _ in range(n_random))
+    day_ci = (day_means[int(0.025 * n_random)], day_means[int(0.975 * n_random) - 1])
+
     # Random baseline: same trades, same timing, coin-flip direction, same costs.
+    # CAVEAT: each trade's gross result came from the strategy's own exit (stop or day-5 open),
+    # so flipping the sign is only a rough control, not a fair no-skill benchmark.
     gross = gross_moves(trades, spread_cost)
     costs = [g - p for g, p in zip(gross, pnl, strict=False)]
     beat = 0
@@ -60,8 +72,12 @@ def summarize(trades: list[dict], spread_cost: dict[str, float], n_random: int =
         "mean_pnl": round(total / n, 2),
         "win_rate": round(sum(p > 0 for p in pnl) / n, 3),
         "mean_pnl_ci95": [round(ci[0], 2), round(ci[1], 2)],
+        "mean_pnl_ci95_by_day": [round(day_ci[0], 2), round(day_ci[1], 2)],
+        "entry_days": len(groups),
         "p_random_as_good": round(beat / n_random, 3),
+        "p_random_note": "rough control: flips direction on strategy-dependent exits",
         "enough_data": n >= 150,
+        "note": "150 trades is a trade-count milestone, not proof; judge by the day-clustered CI",
     }
 
 

@@ -105,6 +105,7 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
         rows += _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halted,
                                earnings or yahoo_earnings, now or datetime.now(UTC),
                                edgar or edgar_earnings)
+        rows.append(journal.write("run_end", trade_date=trade_date, dry_run=dry_run, ok=True))
         return rows
 
     for instrument, ticker in cfg.instruments.items():
@@ -114,6 +115,7 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
         except Exception as exc:  # one instrument failing must not stop the others
             rows.append(journal.write("error", instrument=instrument, ticker=ticker,
                                       error=f"{type(exc).__name__}: {exc}"))
+    rows.append(journal.write("run_end", trade_date=trade_date, dry_run=dry_run, ok=True))
     return rows
 
 
@@ -165,14 +167,19 @@ def _one(broker, analyze, cfg, journal, instrument, ticker, trade_date, nav, dry
     return rows
 
 
+def _exposed(broker) -> list[dict]:
+    """Positions still carrying risk, including exit-queued ones (paper account)."""
+    return (broker.exposure_trades() if hasattr(broker, "exposure_trades") else broker.our_open_trades())
+
+
 def _open(broker, cfg, journal, instrument, rating, direction, nav, dry_run):
-    if cfg.max_open_positions and len(broker.our_open_trades()) >= cfg.max_open_positions:
+    if cfg.max_open_positions and len(_exposed(broker)) >= cfg.max_open_positions:
         return journal.write("skip", instrument=instrument, rating=rating,
                              reason=f"{cfg.max_open_positions} positions already open")
     if direction < 0 and instrument in cfg.no_short:
         return journal.write("skip", instrument=instrument, rating=rating, reason="on the no-short list")
     if cfg.max_net_positions:
-        net = sum(1 if float(t["currentUnits"]) > 0 else -1 for t in broker.our_open_trades())
+        net = sum(1 if float(t["currentUnits"]) > 0 else -1 for t in _exposed(broker))
         if net * direction >= cfg.max_net_positions:
             return journal.write("skip", instrument=instrument, rating=rating,
                                  reason=f"net exposure already {net:+d} positions")
@@ -229,16 +236,23 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
     since = pd.Timestamp(state["last_earnings_scan"]) if "last_earnings_scan" in state \
         else pd.Timestamp(now - timedelta(days=1))
     now_ts = pd.Timestamp(now)
-    held = {t["instrument"] for t in broker.our_open_trades()}
+    held = {t["instrument"] for t in _exposed(broker)}
     reported, report_times, edgar_check = [], {}, {}
+    # A symbol whose earnings lookup failed keeps its old window, so the scan watermark moving
+    # on cannot lose it. Entries older than retry_days trading days are dropped.
+    lookup_retry = {t: pd.Timestamp(v) for t, v in state.get("lookup_retry", {}).items()
+                    if np.busday_count(pd.Timestamp(v).date().isoformat(), trade_date) <= cfg.retry_days}
+    lookup_failed = {}
     for ticker in cfg.universe:
+        start = min(since, lookup_retry.get(ticker, since))
         try:
-            hits = [pd.Timestamp(ts) for ts in earnings(ticker) if since < pd.Timestamp(ts) <= now_ts]
+            hits = [pd.Timestamp(ts) for ts in earnings(ticker) if start < pd.Timestamp(ts) <= now_ts]
             if hits:
                 reported.append(ticker)
                 report_times[ticker] = f"{hits[0].isoformat()} ({_session(hits[0])})"
                 edgar_check[ticker] = _edgar_check(ticker, hits[0], edgar)
         except Exception as exc:
+            lookup_failed[ticker] = start
             rows.append(journal.write("error", instrument=ticker, error=f"earnings lookup: {exc}"))
     # Stocks that failed or were over the limit last time get another chance first,
     # for up to cfg.retry_days trading days after they reported.
@@ -270,5 +284,6 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
     if not dry_run:
         state["last_earnings_scan"] = now_ts.isoformat()
         state["retry"] = {t: first_seen[t] for t in [*failed, *skipped]}
+        state["lookup_retry"] = {t: v.isoformat() for t, v in lookup_failed.items()}
         journal.save_state(state)
     return rows

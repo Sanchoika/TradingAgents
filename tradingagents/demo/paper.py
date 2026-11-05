@@ -12,6 +12,7 @@ crypto -USD pairs and xxxUSD forex). Shorts pay a borrow fee (borrow_bps_per_yea
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -48,7 +49,9 @@ class PaperBroker:
     # -- persistence -----------------------------------------------------
     def _save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.s, indent=1), encoding="utf-8")
+        tmp = self.path.with_name(self.path.name + ".tmp")  # write then swap: a crash never leaves half a file
+        tmp.write_text(json.dumps(self.s, indent=1), encoding="utf-8")
+        os.replace(tmp, self.path)
 
     def _frame(self, symbol: str) -> pd.DataFrame:
         df = self.bars(symbol, self.today().isoformat()).dropna(subset=["Open", "High", "Low", "Close"])
@@ -90,6 +93,16 @@ class PaperBroker:
                 for t in self.s["open"]
                 if t["status"] != "closing" and (name is None or t["instrument"] == name)]
 
+    def exposure_trades(self, name: str | None = None) -> list[dict]:
+        """Trades that still carry market risk: pending, open, and exit-queued ("closing") ones.
+
+        A queued exit is not a closed position; it stays exposed (and stop-protected) until
+        the exit actually fills at the next open.
+        """
+        return [{"id": t["id"], "instrument": t["instrument"], "currentUnits": str(t["units"]),
+                 "status": t["status"], "opened": t.get("filled_on") or t["ordered_on"]}
+                for t in self.s["open"] if name is None or t["instrument"] == name]
+
     def our_closed_trades(self, count: int = 500) -> list[dict]:
         return self.s["closed"][-count:]
 
@@ -130,20 +143,28 @@ class PaperBroker:
                 t["stop"] = t["price"] - side * t["stop_distance"]
                 t["filled_on"], t["status"] = str(dates[later.index[0]]), "open"
                 events.append({"event": "paper_fill", "trade_id": t["id"], "price": t["price"]})
+            side = 1 if t["units"] > 0 else -1
+            exit_idx = None
             if t["status"] == "closing":
                 later = df[dates > t["close_ordered_on"]]
                 if not later.empty:
-                    events.append(self._close(t, float(later.iloc[0].Open), str(dates[later.index[0]]), "rating"))
-                continue
-            # stops: every bar from the fill day on
+                    exit_idx = later.index[0]
+            # Stops: every bar from the fill day on. An exit-queued trade keeps its stop until the
+            # exit bar, which fills at its open (before that bar's range can trade).
+            stopped = False
             for i in df.index[dates >= t["filled_on"]]:
-                bar, side = df.loc[i], (1 if t["units"] > 0 else -1)
+                if exit_idx is not None and i >= exit_idx:
+                    break
+                bar = df.loc[i]
                 hit = bar.Low <= t["stop"] if side > 0 else bar.High >= t["stop"]
                 if hit:
                     gap = bar.Open < t["stop"] if side > 0 else bar.Open > t["stop"]
                     exit_px = float(bar.Open) if gap else t["stop"]
                     events.append(self._close(t, exit_px, str(dates[i]), "stop"))
+                    stopped = True
                     break
+            if not stopped and exit_idx is not None:
+                events.append(self._close(t, float(df.loc[exit_idx].Open), str(dates[exit_idx]), "rating"))
         self._save()
         return events
 

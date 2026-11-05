@@ -41,13 +41,22 @@ def excess_vs_sector(closed: list[dict], bars) -> dict:
     """
     excess, skipped = [], 0
     cache: dict[str, pd.DataFrame] = {}
+    # Fetch each fund once, as of the LATEST close that needs it; an earlier-dated first request
+    # must not serve later trades a shorter history.
+    latest: dict[str, str] = {}
+    for t in closed:
+        etf = SECTOR_ETF.get(t["instrument"])
+        if etf:
+            latest[etf] = max(latest.get(etf, ""), t["closed"])
     for t in closed:
         etf = SECTOR_ETF.get(t["instrument"])
         side = 1 if t["units"] > 0 else -1
         try:
             if etf is None:
                 raise KeyError(t["instrument"])
-            df = cache.setdefault(etf, bars(etf, t["closed"]))
+            if etf not in cache:
+                cache[etf] = bars(etf, latest[etf])
+            df = cache[etf]
             a, b = _open_on_or_after(df, t["opened"]), _open_on_or_after(df, t["closed"])
             if a is None or b is None:
                 raise ValueError("no sector prices")

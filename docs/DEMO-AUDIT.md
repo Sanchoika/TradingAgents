@@ -53,3 +53,29 @@ Ordered by how much each item threatens a trustworthy result.
 
 Not recommended mid-test: changing the trading rules, the model, the universe or
 the holding period. Each restarts the count toward 150 trades.
+
+## Stage B correctness pass (2026-11-05)
+
+Fixed, each with a test that failed before the fix (`tests/test_demo_paper.py`, bottom):
+
+- Exit-queued ("closing") positions now count toward the position and net-exposure caps and the
+  "already held" check, and keep their stop until the exit bar. A stop hit before the exit bar wins;
+  the exit bar itself fills at its open.
+- `report` no longer calls `sync()`; only `run` settles fills and stops (and journals them once).
+- Sector comparison fetches each fund once, as of the latest close that needs it (it used to reuse
+  the first, possibly shorter, history).
+- Runs write `run_end`; the missing-run check needs it, so a crash after `run_start` is flagged.
+  Journals from before this change are trusted for earlier dates.
+- A failed earnings lookup keeps its old window (`lookup_retry` in state) after the scan watermark moves.
+- `run` takes a single-writer lock (`run.lock`, stale-owner takeover); the paper account file is
+  written atomically (temp file + replace).
+- Report: added a day-clustered bootstrap CI (`mean_pnl_ci95_by_day`) and labelled the random
+  baseline as a rough control, since it flips direction on strategy-dependent exits. 150 trades is a
+  trade-count milestone, not proof.
+
+Not changed (rules are frozen; a change restarts the 150-trade count) — decision for Irakli:
+
+- **Hold length.** Exit is ordered on the first run where `busday_count(fill day, run day) >= 5`, and
+  fills at the following open, so a trade is held about 6 sessions from its entry open, not 5.
+  `busday_count` also ignores NYSE holidays. Options: keep and document (current), or order the exit
+  one run earlier. Either is a rule change.

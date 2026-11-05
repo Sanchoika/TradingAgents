@@ -114,7 +114,9 @@ def missing_run(events: list[dict], now, run_hour: int = 8, grace_hours: int = 1
     """Date of the latest weekday whose scheduled run has no journal entry, else None.
 
     ``now`` is a timezone-aware time; the schedule is New York time. A run counts when the
-    journal has a real (not dry-run) ``run_start`` for that date or a later one.
+    journal has a real (not dry-run) ``run_end`` for that date or a later one: a run that
+    crashed after ``run_start`` is not a success. Journals from before ``run_end`` existed
+    are trusted for ``run_start`` dates earlier than the first ``run_end``.
     """
     from datetime import timedelta
     from zoneinfo import ZoneInfo
@@ -125,5 +127,9 @@ def missing_run(events: list[dict], now, run_hour: int = 8, grace_hours: int = 1
         day -= timedelta(days=1)
     while day.weekday() > 4:
         day -= timedelta(days=1)
-    done = [e["trade_date"] for e in events if e["event"] == "run_start" and not e.get("dry_run")]
+    ends = [e["trade_date"] for e in events if e["event"] == "run_end" and not e.get("dry_run")]
+    first_end = min(ends, default=None)
+    done = ends + [e["trade_date"] for e in events
+                   if e["event"] == "run_start" and not e.get("dry_run")
+                   and (first_end is None or e["trade_date"] < first_end)]
     return None if done and max(done) >= day.isoformat() else day.isoformat()
