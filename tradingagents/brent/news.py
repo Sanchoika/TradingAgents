@@ -14,6 +14,7 @@ instruction not to follow anything written in it.
 from __future__ import annotations
 
 import email.utils
+import gzip
 import hashlib
 import html
 import json
@@ -48,6 +49,7 @@ EIA_NOTE = ("EIA WPSR files are logged by version and time but not interpreted: 
             "count as news coverage. The Wednesday release window is a blackout instead.")
 
 
+ROTATE_KEEP_DAYS = 14   # live file keeps this much; older events go to news-archive/ (gzip, append-only)
 BACKOFF_FREE_FAILURES = 2     # first failures retry at the normal poll rhythm
 BACKOFF_BASE_S = 60
 BACKOFF_MAX_S = 900
@@ -264,6 +266,10 @@ class NewsCollector:
         for it in new[: self.check_content]:
             self._content_check(it)
             self._evidence(it)
+        try:
+            self.maybe_rotate()
+        except OSError as exc:   # never let housekeeping stop the news check
+            self.write("log_rotate_error", error=f"{type(exc).__name__}: {str(exc)[:160]}")
         self.save()
         return new
 
@@ -328,6 +334,50 @@ class NewsCollector:
                        note="link reachability only; fetched text is not analysed")
         except Exception as exc:
             self.write("content_check", key=it.key, status=None, error=str(exc)[:160])
+
+    def rotate(self, keep_days: int = ROTATE_KEEP_DAYS) -> dict:
+        """Move events older than ``keep_days`` into news-archive/YYYY-MM.jsonl.gz and keep the rest.
+        Runs inside the single writer (this collector), so no append can be lost. Archive first, then an
+        atomic replace of the live file; nothing is deleted. Returns counts."""
+        path = self.log_path
+        cutoff = self.now() - timedelta(days=keep_days)
+        if not path.exists():
+            return {"moved": 0, "kept": 0}
+        keep, old = [], {}
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    ts = datetime.fromisoformat(json.loads(line)["ts"])
+                except (ValueError, KeyError, TypeError):
+                    keep.append(line if line.endswith("\n") else line + "\n")
+                    continue
+                if ts < cutoff:
+                    old.setdefault(ts.strftime("%Y-%m"), []).append(line if line.endswith("\n") else line + "\n")
+                else:
+                    keep.append(line if line.endswith("\n") else line + "\n")
+        if not old:
+            return {"moved": 0, "kept": len(keep)}
+        arch = self.dir / "news-archive"
+        arch.mkdir(exist_ok=True)
+        for month, lines in old.items():
+            with gzip.open(arch / f"{month}.jsonl.gz", "at", encoding="utf-8") as gz:
+                gz.writelines(lines)
+        tmp = path.with_suffix(".rotating")
+        tmp.write_text("".join(keep), encoding="utf-8")
+        tmp.replace(path)
+        moved = sum(len(v) for v in old.values())
+        self.write("log_rotated", moved=moved, kept=len(keep), archive=str(arch))
+        return {"moved": moved, "kept": len(keep)}
+
+    def maybe_rotate(self) -> dict | None:
+        last = self.st.get("last_rotate")
+        if last and self.now() - datetime.fromisoformat(last) < timedelta(hours=24):
+            return None
+        res = self.rotate()
+        self.st["last_rotate"] = _iso(self.now())
+        return res
 
     def feed_health(self) -> dict:
         """Fresh feeds by source function; fresh_check needs enough general news feeds."""

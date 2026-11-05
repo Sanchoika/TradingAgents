@@ -382,3 +382,30 @@ def test_read_since_matches_full_read_across_chunk_boundaries(tmp_path):
         got = read_since(p, since, chunk=chunk)
         assert [e["i"] for e in got] == list(range(123, 500))
     assert read_since(tmp_path / "none.jsonl", since) == []
+
+
+def test_rotate_archives_old_events_and_keeps_recent(tmp_path):
+    import gzip
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from tradingagents.brent import news
+
+    now = datetime(2026, 11, 5, 12, tzinfo=UTC)
+    c = news.NewsCollector(tmp_path, get=lambda u: None, now=lambda: now, yahoo=None)
+    old1 = (now - timedelta(days=40)).isoformat()
+    old2 = (now - timedelta(days=20)).isoformat()
+    new = (now - timedelta(days=2)).isoformat()
+    c.log_path.write_text("\n".join(json.dumps(r) for r in (
+        {"ts": old1, "event": "x", "n": 1}, {"ts": old2, "event": "x", "n": 2},
+        {"ts": new, "event": "x", "n": 3})) + "\nnot json at all\n", encoding="utf-8")
+    res = c.rotate()
+    assert res == {"moved": 2, "kept": 2}                       # recent event + the unparseable line
+    live = [x for x in c.log_path.read_text().splitlines() if x]
+    assert any('"n": 3' in x for x in live) and "not json at all" in live
+    names = {p.name for p in (tmp_path / "news-archive").glob("*.gz")}
+    assert names == {"2026-09.jsonl.gz", "2026-10.jsonl.gz"}
+    with gzip.open(tmp_path / "news-archive" / "2026-09.jsonl.gz", "rt") as fh:
+        assert '"n": 1' in fh.read()
+    assert c.rotate()["moved"] == 0                             # idempotent
+    assert c.maybe_rotate() is not None and c.maybe_rotate() is None   # once a day
