@@ -2,7 +2,7 @@
 
 Status 2026-11-05: Brent runs in two tmux sessions (`brent` monitor, news collector). A crash or
 reboot leaves them stopped. The files in `deploy/systemd/` replace tmux with supervised services.
-**Nothing here is installed yet.** Two decisions are Irakli's:
+**Decision 1 (stored token) approved by Irakli 2026-11-05;** decision 2 (external heartbeat account) is still open. Install with `deploy/install-brent-services.sh` (needs a terminal: Irakli types the token at the hidden prompt). Note: an OANDA practice token cannot be scoped read-only; Brent's code never places orders, but the token itself could, so it is practice-only and revocable.
 
 ## 1. How the OANDA practice token survives a reboot (needs approval)
 
@@ -29,7 +29,9 @@ its Telegram integration) when pings stop (whole-host outage) or `/fail` arrives
 problem). The URL is a secret, stored in `/etc/tradingagents/heartbeat-url` (mode 600).
 Without a heartbeat URL the file is empty and only the local check runs.
 
-## Install (after approval)
+## Install (approved)
+
+Short form: `bash deploy/install-brent-services.sh` as root in a terminal. Manual steps for reference:
 
 ```
 install -d -m 700 /etc/tradingagents
