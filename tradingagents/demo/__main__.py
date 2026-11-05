@@ -214,6 +214,9 @@ def cmd_report(args, cfg) -> int:
             result["ratings"] = score_ratings(rating_decisions(journal.events()), broker.bars, cfg.hold_days)
         except Exception as exc:
             result["ratings"] = {"error": str(exc)}
+    from .decision_v2 import compare
+
+    result["decision_v2_shadow"] = compare(journal.events())
     print(json.dumps(result, indent=2))
     if cfg.notes_dir:
         from .notes import write_scorecard

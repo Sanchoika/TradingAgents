@@ -548,3 +548,53 @@ def test_summary_reports_day_clustered_ci():
                "opened": f"2026-11-0{1 + i % 4}"} for i in range(12)]
     r = summarize(trades, {}, n_random=200)
     assert r["entry_days"] == 4 and len(r["mean_pnl_ci95_by_day"]) == 2 and "note" in r
+
+
+# ---- decision v2 (shadow) ------------------------------------------------------
+
+def test_v2_trim_existing_holding_is_not_a_new_short():
+    from tradingagents.demo.decision_v2 import interpret
+
+    txt = ("Rating: Underweight. We recommend trimming the existing allocation over the coming months; "
+           "this is not a call for mechanical selling at a low existing position.")
+    r = interpret("Underweight", -1, txt)
+    assert r["decision"] == "ABSTAIN" and "trim_existing_only" in r["flags"] and not r["agrees_with_v1"]
+
+
+def test_v2_conditional_entry_and_horizon_mismatch_and_missing_earnings():
+    from tradingagents.demo.decision_v2 import horizon_days, interpret
+
+    assert horizon_days("a 6-12 month thesis") == 360 and horizon_days("hold for 5 days") == 5
+    cond = interpret("Overweight", 1, "Buy only if the stock pulls back to 150 after the print.")
+    assert cond["decision"] == "ABSTAIN" and "conditional_entry" in cond["flags"]
+    long_h = interpret("Buy", 1, "Initiate a position; our thesis plays out over 6-12 months.")
+    assert long_h["decision"] == "ABSTAIN" and "horizon_mismatch" in long_h["flags"]
+    miss = interpret("Buy", 1, "The earnings release could not be verified from available sources.")
+    assert miss["decision"] == "ABSTAIN" and "earnings_unverified" in miss["flags"]
+
+
+def test_v2_clean_report_matches_v1_and_hold_is_abstain():
+    from tradingagents.demo.decision_v2 import interpret
+
+    ok = interpret("Buy", 1, "Strong beat and raised guidance. Buy for the next 5 trading days.")
+    assert ok["decision"] == "LONG" and ok["agrees_with_v1"] and ok["flags"] == []
+    sh = interpret("Sell", -1, "Guidance cut and weak margins; short for the coming week.")
+    assert sh["decision"] == "SHORT" and sh["agrees_with_v1"]
+    hold = interpret("Hold", 0, "Nothing to do.")
+    assert hold["decision"] == "ABSTAIN" and hold["flags"] == ["no_trade_rating"] and hold["agrees_with_v1"]
+
+
+def test_v2_is_journalled_without_changing_orders(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(mode="earnings", universe=["AAA"], journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+    analyzer = lambda t, d: ("Underweight", "Trim the existing holding over 6 months.")  # noqa: E731
+    rows = run_once(b, analyzer, cfg, j, "2026-11-03",
+                    earnings=lambda t: [pd.Timestamp("2026-11-02T21:00:00Z")],
+                    now=datetime(2026, 11, 3, 13, tzinfo=UTC), edgar=lambda t: [])
+    v2 = [r for r in rows if r["event"] == "decision_v2"]
+    assert len(v2) == 1 and v2[0]["decision"] == "ABSTAIN"
+    assert any(r["event"] == "open" for r in rows)                  # the frozen test still trades
+    from tradingagents.demo.decision_v2 import compare
+    assert compare(j.events())["v2_abstained_where_v1_traded"] == 1
