@@ -640,7 +640,8 @@ def news_view(folder: str | Path, now: datetime) -> dict:
     if not log.exists() or not state_path.exists():
         return {"state": "unavailable", "status": "collector_missing",
                 "why": "news check not running (no news log)", "items": [], "basis": ANALYSIS_BASIS}
-    mt = (log.stat().st_mtime, state_path.stat().st_mtime)
+    # mtime alone can repeat for two quick writes on Windows; size changes with every append
+    mt = tuple((s.st_mtime_ns, s.st_size) for s in (log.stat(), state_path.stat()))
     if _VIEW_CACHE.get("key") != (str(folder), mt):
         events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x.strip()]
         _VIEW_CACHE.update(key=(str(folder), mt), events=events,
