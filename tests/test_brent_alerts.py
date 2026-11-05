@@ -786,3 +786,28 @@ def test_health_command_and_progress_checks(tmp_path, monkeypatch, capsys):
     assert m.main(["health", "--ping-file", str(ping_file)]) == 1
     assert pings == ["https://hc.example/abc/fail"]
     assert "hc.example" not in capsys.readouterr().out               # URL never printed
+
+
+def test_replay_groups_sessions_by_version_with_one_definition():
+    from tradingagents.brent.report import replay_by_version
+
+    def ev(ts, event, **kw):
+        return {"ts": ts, "event": event, **kw}
+
+    old = [ev("2026-11-03T10:00:00+00:00", "start", manifest={"experiment": "brent-exp-2"},
+              config={"range_low": 100, "range_high": 120}),
+           ev("2026-11-03T10:30:00+00:00", "range", inside=False, mid=96),
+           ev("2026-11-03T12:00:00+00:00", "range", inside=True, mid=101),
+           ev("2026-11-03T12:10:00+00:00", "suppressed", key="A", direction="long", reasons=["spread"]),
+           ev("2026-11-03T14:00:00+00:00", "tick")]
+    new = [ev("2026-11-05T10:00:00+00:00", "start", manifest={"experiment": "brent-exp-3"},
+              config={"range_low": 80, "range_high": 115}),
+           ev("2026-11-05T11:00:00+00:00", "watch", key="B", setup={}),
+           ev("2026-11-05T12:00:00+00:00", "candidate", key="B", direction="long", action="long", row="r"),
+           ev("2026-11-05T13:00:00+00:00", "tick")]
+    out = replay_by_version(old + new)["versions"]
+    a, b = out["brent-exp-2 range 100-120"], out["brent-exp-3 range 80-115"]
+    assert a["hours_monitored"] == 4.0 and a["hours_outside_range"] == 1.5
+    assert a["setups_detected"] == 1 and a["entry_zone_reached"] == 1       # legacy suppressed counts
+    assert b["setups_detected"] == 1 and b["evidence_ready"] == 1
+    assert a["setups_per_100_hours_in_range"] == 40.0                          # 1 setup / 2.5 h in range

@@ -67,7 +67,11 @@ def progression(events: list[dict]) -> dict:
     was held back; all reasons are listed. Research-only chart-only signals are not counted as
     notifications, and WATCH messages are reported apart.
     """
-    detected = {e["key"] for e in events if e["event"] == "watch" and e.get("key")}
+    # Before WATCH existed (brent-exp-2 and earlier) a setup first appeared as a candidate, a suppressed
+    # record or a signal; counting those keeps old and new versions on the same denominator.
+    detected = {e["key"] for e in events if e["event"] in ("watch", "candidate", "suppressed")
+                and e.get("key")}
+    detected |= {(e.get("setup") or {}).get("key") for e in events if e["event"] == "signal"} - {None}
     suppressed: dict[str, list[str]] = {}
     for e in events:
         if e["event"] == "suppressed" and e.get("key"):
@@ -103,6 +107,53 @@ def progression(events: list[dict]) -> dict:
                                   and e.get("outcome") == "entry"),
             "denominators": "unique setups; 'notification_accepted' = notify command accepted the "
                             "ENTRY; phone display is not measured; chart-only shadow signals excluded"}
+
+
+def replay_by_version(events: list[dict]) -> dict:
+    """Run the same progression over each monitor session, grouped by experiment version, so versions
+    are compared on one definition. Descriptive only: sessions differ in market conditions, range and
+    length; counts are small; no causal claim. Time outside the operating range is measured from the
+    recorded range transitions."""
+    sessions: list[list[dict]] = []
+    for e in events:
+        if e["event"] == "start" or not sessions:
+            sessions.append([])
+        sessions[-1].append(e)
+    groups: dict[str, dict] = {}
+    for ses in sessions:
+        start = next((e for e in ses if e["event"] == "start"), None)
+        man = (start or {}).get("manifest") or {}
+        cfg = (start or {}).get("config") or {}
+        label = f"{man.get('experiment', 'pre-manifest')} range {cfg.get('range_low', '?')}-{cfg.get('range_high', '?')}"
+        t0, t1 = datetime.fromisoformat(ses[0]["ts"]), datetime.fromisoformat(ses[-1]["ts"])
+        outside, prev, state = 0.0, None, None
+        for e in ses:
+            if e["event"] != "range":
+                continue
+            t = datetime.fromisoformat(e["ts"])
+            if prev is not None and state is False:
+                outside += (t - prev).total_seconds()
+            prev, state = t, e.get("inside")
+        if prev is not None and state is False:
+            outside += (t1 - prev).total_seconds()
+        g = groups.setdefault(label, {"sessions": 0, "hours": 0.0, "hours_outside_range": 0.0, "events": []})
+        g["sessions"] += 1
+        g["hours"] += (t1 - t0).total_seconds() / 3600
+        g["hours_outside_range"] += outside / 3600
+        g["events"].extend(ses)
+    out = {}
+    for label, g in groups.items():
+        pr = progression(g.pop("events"))
+        hrs_in = max(g["hours"] - g["hours_outside_range"], 0.0)
+        out[label] = {"sessions": g["sessions"], "hours_monitored": round(g["hours"], 1),
+                      "hours_outside_range": round(g["hours_outside_range"], 1), **pr,
+                      "setups_per_100_hours_in_range": round(100 * pr["setups_detected"] / hrs_in, 1)
+                      if hrs_in >= 1 else None,
+                      "notified_per_100_hours_in_range": round(100 * pr["notification_accepted"] / hrs_in, 1)
+                      if hrs_in >= 1 else None}
+    return {"versions": out,
+            "caveat": "Same progression definition for every version; sessions differ in market conditions, "
+                      "range and length, so differences are descriptive, not proof that a version is better."}
 
 
 def summarize(events: list[dict]) -> dict:
