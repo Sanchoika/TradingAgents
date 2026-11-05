@@ -575,7 +575,7 @@ def test_report_and_page(tmp_path):
     assert res["operational"]["signals_issued"] == 1
     groups = res["paper_hypothetical"]["by_group"]
     (g, stats), = groups.items()
-    assert g == "brent-exp-2 | combined chart-led | sent (notify command accepted) | paper-v2"
+    assert g == "brent-exp-3 | combined chart-led | sent (notify command accepted) | paper-v2"
     assert stats["closed"] == 1 and stats["net_r_mean"] > 1
     assert res["manual_confirmed"]["records"] == 0
     assert "NOT a measure of news's contribution" in res["chart_only_comparison"]["differences_from_combined"]
@@ -626,3 +626,25 @@ def test_sender_runs_notify_in_own_session(tmp_path, monkeypatch):
     # POSIX: own session so the notify tool can't signal the monitor; Windows has no sessions
     import os
     assert ok and seen["input"] == "hi" and seen["start_new_session"] is (os.name != "nt")
+
+
+def test_range_80_115_inclusive_boundaries_use_mid_and_zone():
+    cfg = BrentConfig()
+    assert (cfg.range_low, cfg.range_high) == (80.0, 115.0)
+    assert cfg.config_hash() != BrentConfig(range_low=100.0, range_high=120.0).config_hash()
+
+    def blockers(level, bid, ask):
+        s = rules.detect({"o": level - 0.1, "h": level + 0.6, "l": level - 0.2, "c": level + 0.5},
+                         T0, level, level - 2, 2.0, "d", cfg)[0]
+        return [r for r in rules.entry_blockers(s, bid, ask, T0, True, T0, cfg) if "operating range" in r]
+
+    # A long breakout above a yesterday-high of 90 has its zone near 90: well inside.
+    assert blockers(90.0, 90.17, 90.20) == []
+    # Mid just below 80 or above 115 is outside, whatever the zone.
+    assert blockers(79.5, 79.5, 79.54)
+    assert blockers(115.5, 115.5, 115.54)
+    # Exactly 80.0 and 115.0 mid are inside the mid gate; the zone must fit too.
+    narrow_lo = BrentConfig(range_low=80.0, range_high=115.0)
+    assert narrow_lo.range_low <= (79.98 + 80.02) / 2 <= narrow_lo.range_high
+    assert not (narrow_lo.range_low <= (79.96 + 80.0) / 2 <= narrow_lo.range_high)
+    assert not (narrow_lo.range_low <= (115.0 + 115.04) / 2 <= narrow_lo.range_high)

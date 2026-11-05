@@ -17,7 +17,7 @@ RULES_VERSION = "brent-v1"
 # brent-exp-2 (2026-11-03 audit fixes): news rechecked during the entry window, chart data
 # must be fresh, news coverage counted by source function, paper exits on the executable
 # side with adverse gap fills, retries of pending news analysis.
-EXPERIMENT_VERSION = "brent-exp-2"
+EXPERIMENT_VERSION = "brent-exp-3"  # exp-3 (2026-11-05): range 80-115, 250 calls/24h, 12/h
 CHART_POLICY_VERSION = "chart-v1"       # chart.py regime/room definitions
 NEWS_POLICY_VERSION = "news-policy-v2"  # news.py coverage + policy table
 PAPER_RULES_VERSION = "paper-v2"        # engine.py paper fills/exits
@@ -37,8 +37,8 @@ RULE_FIELDS = (
 class BrentConfig:
     instrument: str = "BCO_USD"
     # Operating range for NEW entry suggestions (USD). Never changed by the code.
-    range_low: float = 100.0
-    range_high: float = 120.0
+    range_low: float = 80.0
+    range_high: float = 115.0
 
     # Entry validity: the clock starts at the quote time of the final check.
     validity_seconds: int = 60
@@ -72,8 +72,8 @@ class BrentConfig:
     # News checks (phase 1: logged only) and the bounded model call
     llm_provider: str = "chatgpt"    # existing repo integration (ChatGPT plan sign-in)
     llm_model: str = "gpt-6-luna"
-    llm_per_hour: int = 6            # ceilings, not targets
-    llm_per_day: int = 40
+    llm_per_hour: int = 12           # ceilings, not targets
+    llm_per_day: int = 250
     llm_quiet_et: list[str] = field(default_factory=lambda: ["07:30", "10:30"])  # morning bot
     news_poll_seconds: int = 180
 

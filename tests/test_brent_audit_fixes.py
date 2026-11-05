@@ -198,11 +198,11 @@ def test_signal_and_start_carry_experiment_manifest(tmp_path):
     mon.tick()
     sig = [e for e in store.events() if e["event"] == "signal"][0]
     m = sig["experiment"]
-    assert m["experiment"] == "brent-exp-2" and m["news_policy"] == "news-policy-v2"
+    assert m["experiment"] == "brent-exp-3" and m["news_policy"] == "news-policy-v2"
     assert m["model"] == "chatgpt:gpt-6-luna" and m["prompt_hash"] == news.prompt_hash()
     assert m["code_commit"] and m["experiment_hash"]
     start = [e for e in store.events() if e["event"] == "start"][0]
-    assert start["manifest"]["experiment"] == "brent-exp-2"
+    assert start["manifest"]["experiment"] == "brent-exp-3"
     assert "Experimental entry alerts are ENABLED" in sender.texts[0]
 
 
@@ -224,7 +224,7 @@ def test_report_separates_groups_and_old_paper_records():
          "telegram": True, "setup": {"kind": "BREAKOUT", "direction": "LONG"}},
         {"event": "sent", "kind": "alert", "id": "BR-1", "ok": True, "seconds": 2.0},
         {"event": "signal", "id": "BR-2", "arm": "combined", "label": "news-supported", "telegram": True,
-         "setup": {"kind": "BREAKOUT", "direction": "LONG"}, "experiment": {"experiment": "brent-exp-2"},
+         "setup": {"kind": "BREAKOUT", "direction": "LONG"}, "experiment": {"experiment": "brent-exp-3"},
          "paper_rules": "paper-v2"},
         {"event": "sent", "kind": "alert", "id": "BR-2", "ok": True, "seconds": 2.0},
         {"event": "signal", "id": "SH-1", "arm": "chart-only", "telegram": False,
@@ -239,10 +239,10 @@ def test_report_separates_groups_and_old_paper_records():
     groups = r["paper_hypothetical"]["by_group"]
     old = "pre-manifest | combined chart-led | sent (notify command accepted) | paper-v1"
     assert groups[old]["caution"].startswith("paper-v1") and groups[old]["net_r_total"] == 1.5
-    assert "brent-exp-2 | combined news-supported | sent (notify command accepted) | paper-v2" in groups
+    assert "brent-exp-3 | combined news-supported | sent (notify command accepted) | paper-v2" in groups
     assert "BR-2" not in json.dumps(r["chart_only_comparison"]["by_group"])
     assert set(r["directional_by_group"]) == {
-        "brent-exp-2 | combined news-supported | sent (notify command accepted)",
+        "brent-exp-3 | combined news-supported | sent (notify command accepted)",
         "pre-manifest | chart-only (shadow, not sent)"}
 
 

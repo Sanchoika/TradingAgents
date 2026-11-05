@@ -124,14 +124,14 @@ never from results.
   - the market is closed or not tradeable;
   - the quote is stale or missing;
   - the spread is above the limit;
-  - the mid or the entry zone is outside 100-120;
+  - the mid or the entry zone is outside 80-115;
   - the price is outside the zone or already beyond the stop;
   - the stop is under 4 spreads away;
   - it is within 15 min of the daily close;
   - it falls inside the EIA blackout;
   - the measured delays are too long;
   - the cooldown is running.
-- **Operating range 100-120.** When the mid leaves the range, one message says so and new
+- **Operating range 80-115.** When the mid leaves the range, one message says so and new
   suggestions pause. Monitoring, logging and open paper signals continue. The range is never
   changed by the code.
 
@@ -435,7 +435,7 @@ Every signal and every monitor start carries a manifest: experiment version
 (`brent-exp-2`), setup rules (`brent-v1`, unchanged), chart policy (`chart-v1`), news policy
 (`news-policy-v2`), paper rules (`paper-v2`), code commit, model id, prompt hash, config hash
 and the news/model settings. Reports group by experiment, so earlier records (no manifest)
-never pool with new ones. Strategy parameters, the 100-120 range, risk settings and model
+never pool with new ones. Strategy parameters, the 80-115 range, risk settings and model
 budgets did not change.
 
 The independent audit of e10d2f3 (2026-11-02) found ten issues. Each was reproduced first
