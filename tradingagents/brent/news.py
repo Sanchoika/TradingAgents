@@ -436,16 +436,20 @@ class Budget:
     """Hard caps on model calls; a ceiling, not a target. Morning window protects the demo."""
 
     def __init__(self, per_hour: int = 6, per_day: int = 40,
-                 quiet: tuple[str, str] = ("07:30", "10:30")):
+                 quiet: tuple[str, str] = ("07:30", "10:30"), reserve_urgent: int = 0):
         self.per_hour, self.per_day, self.quiet = per_hour, per_day, quiet
+        # Hourly slots only a batch with an urgent item may use (room for significant updates).
+        self.reserve_urgent = min(reserve_urgent, max(per_hour - 1, 0))
 
-    def refusal(self, calls: list[str], now: datetime) -> str | None:
+    def refusal(self, calls: list[str], now: datetime, urgent: bool = False) -> str | None:
         hm = now.astimezone(NY).strftime("%H:%M")
         if self.quiet[0] <= hm < self.quiet[1] and now.astimezone(NY).weekday() < 5:
             return f"quiet window {self.quiet[0]}-{self.quiet[1]} ET (morning bot)"
         times = [datetime.fromisoformat(t) for t in calls]
-        if sum(now - t < timedelta(hours=1) for t in times) >= self.per_hour:
-            return f"hourly cap {self.per_hour}"
+        hour_cap = self.per_hour if urgent else self.per_hour - self.reserve_urgent
+        if sum(now - t < timedelta(hours=1) for t in times) >= hour_cap:
+            return f"hourly cap {self.per_hour}" if urgent or not self.reserve_urgent else \
+                f"hourly cap {self.per_hour} ({self.reserve_urgent} slots kept for urgent items)"
         if sum(now - t < timedelta(days=1) for t in times) >= self.per_day:
             return f"daily cap {self.per_day}"
         return None
@@ -458,7 +462,7 @@ def budget_usage(folder: str | Path, now: datetime, per_hour: int, per_day: int,
     ev = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()] \
         if path.exists() else []
     an = [(datetime.fromisoformat(e["ts"]), e) for e in ev if e["event"] == "analysis"]
-    called = [t for t, e in an if e.get("called")]
+    called = [datetime.fromisoformat(t) for t in count_calls(ev)]
     tokens = sum(((e.get("usage") or {}).get("total_tokens") or 0) for t, e in an
                  if e.get("called") and now - t < timedelta(days=1))
     refused: dict[str, int] = {}
@@ -481,7 +485,8 @@ def default_model(provider: str = "chatgpt", model: str = "gpt-6-luna") -> Calla
     """Existing repo integration (ChatGPT plan sign-in by default). Returns (text, usage)."""
     from tradingagents.llm_clients.factory import create_llm_client
 
-    llm = create_llm_client(provider, model).get_llm()
+    # max_retries=0: every attempt is a call we count; client-internal retries would be invisible.
+    llm = create_llm_client(provider, model, max_retries=0).get_llm()
 
     def call(system: str, user: str):
         msg = llm.invoke([("system", system), ("user", user)])
@@ -508,15 +513,46 @@ def pending_items(collector, events: list[dict] | None = None) -> list[dict]:
     return sorted((i for i in items if i["key"] not in done), key=lambda i: i["first_seen"])
 
 
+URGENT_WORDS = ("opec", "hormuz", "sanction", "embargo", "attack", "strike on", "explosion", "outage",
+                "pipeline", "refinery", "blockade", "invasion", "ceasefire", "talks collapse",
+                "production cut", "output cut", "emergency", "force majeure", "tanker", "missile",
+                "drone", "eia")   # code-defined, versioned with the prompt; not a news judgement
+BATCH_WAIT_S = 90        # wait this long (at most) for a small batch to grow before spending a call
+BATCH_MIN = 3
+
+
+def is_urgent(item: dict) -> bool:
+    text = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+    return any(w in text for w in URGENT_WORDS)
+
+
+def should_wait(pending: list[dict], now: datetime, wait_s: float = BATCH_WAIT_S) -> bool:
+    """Batching: a small, non-urgent batch whose oldest item is under BATCH_WAIT_S old waits for
+    company. Bounded, so it never delays anything for more than BATCH_WAIT_S."""
+    if not pending or len(pending) >= BATCH_MIN or any(is_urgent(i) for i in pending):
+        return False
+    return (now - datetime.fromisoformat(pending[0]["first_seen"])).total_seconds() < wait_s
+
+
+def count_calls(events: list[dict]) -> list[str]:
+    """Timestamps of model calls: every started call, plus older records without a start marker.
+    Writing the start before the call means a crash mid-call still spends budget."""
+    started = {e["call_id"] for e in events if e["event"] == "call_started"}
+    out = [e["ts"] for e in events if e["event"] == "call_started"]
+    out += [e["ts"] for e in events if e["event"] == "analysis" and e.get("called")
+            and e.get("call_id") not in started]
+    return sorted(out)
+
+
 def analyze(collector: NewsCollector, model: Callable, budget: Budget,
-            max_items: int = 20) -> dict:
+            max_items: int = 20, batch_wait_s: float = 0) -> dict:
     """Classify the oldest pending batch (items first seen in the last CONFLICT_HOURS with no
     classification yet), so a backlog is worked through instead of abandoned. Logs inputs,
     model id, prompt hash, raw output, parse result, latency, usage and the aggregate news
     state. Any failure -> state 'unavailable'. The model sees headlines and RSS snippets only."""
     now = collector.now()
     events = _events(collector)
-    calls = [e["ts"] for e in events if e["event"] == "analysis" and e.get("called")]
+    calls = count_calls(events)
     items = [e for e in events if e["event"] == "item" and not e["feed"].startswith("eia:")
              and now - datetime.fromisoformat(e["first_seen"]) < timedelta(hours=CONFLICT_HOURS)]
     backlog = pending_items(collector, events)
@@ -528,10 +564,16 @@ def analyze(collector: NewsCollector, model: Callable, budget: Budget,
             "backlog": len(backlog)}
     if not pending:
         return collector.write("analysis", called=False, note="no new items", **base)
-    refusal = budget.refusal(calls, now)
+    if batch_wait_s and should_wait(pending, now, batch_wait_s):
+        return collector.write("analysis", called=False, note="batching: waiting for a larger batch",
+                               **base)
+    refusal = budget.refusal(calls, now, urgent=any(is_urgent(i) for i in pending))
     if refusal:
         return collector.write("analysis", called=False, refused=refusal,
                                state={"state": "unavailable", "why": f"budget: {refusal}"}, **base)
+    call_id = hashlib.sha256(f"{now.isoformat()}{len(calls)}".encode()).hexdigest()[:10]
+    collector.write("call_started", call_id=call_id, items=len(pending))
+    base["call_id"] = call_id
     t0 = time.monotonic()
     raw, usage, parsed, error = "", {}, None, ""
     try:
@@ -640,7 +682,8 @@ def news_view(folder: str | Path, now: datetime) -> dict:
     if not log.exists() or not state_path.exists():
         return {"state": "unavailable", "status": "collector_missing",
                 "why": "news check not running (no news log)", "items": [], "basis": ANALYSIS_BASIS}
-    mt = (log.stat().st_mtime, state_path.stat().st_mtime)
+    # mtime alone can repeat for two quick writes on Windows; size changes with every append
+    mt = tuple((s.st_mtime_ns, s.st_size) for s in (log.stat(), state_path.stat()))
     if _VIEW_CACHE.get("key") != (str(folder), mt):
         events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x.strip()]
         _VIEW_CACHE.update(key=(str(folder), mt), events=events,

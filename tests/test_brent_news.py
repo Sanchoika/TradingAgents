@@ -290,3 +290,46 @@ def test_quiet_window_still_blocks_weekday_mornings():
     b = Budget()
     wed_8am_et = datetime(2026, 11, 4, 13, 0, tzinfo=UTC)
     assert "quiet window" in b.refusal([], wed_8am_et)
+
+
+def test_urgent_reserve_batching_and_call_started_counting(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from tradingagents.brent import news
+
+    b = Budget(per_hour=4, per_day=250, reserve_urgent=2)
+    now = datetime(2026, 11, 7, 16, 0, tzinfo=UTC)   # Saturday
+    two = [(now - timedelta(minutes=m)).isoformat() for m in (5, 10)]
+    assert "kept for urgent" in b.refusal(two, now)             # 2 used = non-urgent cap
+    assert b.refusal(two, now, urgent=True) is None              # urgent may use the reserve
+    four = two + [(now - timedelta(minutes=m)).isoformat() for m in (15, 20)]
+    assert b.refusal(four, now, urgent=True) == "hourly cap 4"
+
+    assert news.is_urgent({"title": "OPEC+ agrees surprise output cut"})
+    assert not news.is_urgent({"title": "Oil edges higher in thin trade"})
+    fresh = {"first_seen": (now - timedelta(seconds=20)).isoformat(), "title": "Oil edges higher"}
+    old = {**fresh, "first_seen": (now - timedelta(seconds=200)).isoformat()}
+    assert news.should_wait([fresh], now) is True               # small, quiet, fresh: wait a little
+    assert news.should_wait([old], now) is False                # waited long enough
+    assert news.should_wait([{**fresh, "title": "Hormuz tanker attack"}], now) is False
+    assert news.should_wait([fresh, fresh, fresh], now) is False
+
+    ev = [{"event": "call_started", "call_id": "a", "ts": "2026-11-07T15:50:00+00:00"},
+          {"event": "analysis", "called": True, "call_id": "a", "ts": "2026-11-07T15:50:03+00:00"},
+          {"event": "analysis", "called": True, "ts": "2026-11-07T15:40:00+00:00"}]   # old record
+    assert news.count_calls(ev) == ["2026-11-07T15:40:00+00:00", "2026-11-07T15:50:00+00:00"]
+
+
+def test_analyze_writes_call_started_and_can_batch_wait(tmp_path):
+    col, clock = make(tmp_path)
+    col.poll()
+    keys = [e["key"] for e in events(col) if e["event"] == "item" and not e["feed"].startswith("eia")]
+    model = lambda s, u: (json.dumps([{**GOOD, "key": k} for k in keys]), {})  # noqa: E731
+    waited = analyze(col, model, Budget(), batch_wait_s=90)
+    assert waited["called"] is False and "batching" in waited["note"]    # one fresh quiet item
+    assert not [e for e in events(col) if e["event"] == "call_started"]
+    clock.t += timedelta(seconds=120)
+    res = analyze(col, model, Budget(), batch_wait_s=90)
+    assert res["called"]
+    started = [e for e in events(col) if e["event"] == "call_started"]
+    assert len(started) == 1 and res["call_id"] == started[0]["call_id"]

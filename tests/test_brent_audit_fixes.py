@@ -348,7 +348,7 @@ def test_news_check_backs_off_after_failures_and_runs_continuously_by_default(tm
     monkeypatch.setattr(news, "NewsCollector", lambda *a: Collector())
     monkeypatch.setattr(news, "default_model", lambda *a: object())
     calls = []
-    monkeypatch.setattr(news, "analyze", lambda *a: calls.append(1) or {"error": "boom", "called": True})
+    monkeypatch.setattr(news, "analyze", lambda *a, **kw: calls.append(1) or {"error": "boom", "called": True})
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
     args = cli.argparse.Namespace(analyze=True, once=False, minutes=0.0)
     assert cli.cmd_news_check(args, BrentConfig(journal_dir=str(tmp_path))) == 0

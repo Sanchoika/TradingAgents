@@ -74,6 +74,7 @@ class BrentConfig:
     llm_model: str = "gpt-6-luna"
     llm_per_hour: int = 12           # ceilings, not targets
     llm_per_day: int = 250
+    llm_reserve_urgent: int = 2      # of the hourly calls, kept for batches with an urgent item
     llm_quiet_et: list[str] = field(default_factory=lambda: ["07:30", "10:30"])  # morning bot
     news_poll_seconds: int = 180
     watch_alerts: bool = True        # send WATCH / WATCH-cancelled notices (never an entry instruction)
@@ -109,7 +110,7 @@ class BrentConfig:
         return hashlib.sha256(json.dumps(rules, sort_keys=True).encode()).hexdigest()[:12]
 
 
-EXPERIMENT_FIELDS = ("llm_provider", "llm_model", "llm_per_hour", "llm_per_day", "llm_quiet_et",
+EXPERIMENT_FIELDS = ("llm_provider", "llm_model", "llm_per_hour", "llm_per_day", "llm_reserve_urgent", "llm_quiet_et",
                      "news_poll_seconds", "alerts_enabled", "watch_alerts")
 
 
