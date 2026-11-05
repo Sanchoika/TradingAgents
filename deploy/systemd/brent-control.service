@@ -6,6 +6,8 @@ After=network-online.target
 Type=simple
 WorkingDirectory=/root/ta-brent
 Environment=PYTHONPATH=/root/ta-brent
+# notify_command runs `hermes`, installed in /root/.local/bin, which systemd does not put on PATH
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.control --config /root/ta-brent/control.toml serve
 Restart=on-failure
 RestartSec=10
