@@ -210,6 +210,13 @@ def cmd_report(args, cfg) -> int:
     return 0
 
 
+def cmd_replay(args, cfg) -> int:
+    from .report import replay_by_version
+
+    print(json.dumps(replay_by_version(Store(cfg.journal_dir).events()), indent=2, default=str))
+    return 0
+
+
 def ping_url(url: str, timeout: float = 10.0) -> bool:
     """GET an external heartbeat URL (healthchecks-style). The URL is a secret: never printed."""
     import urllib.request
@@ -393,6 +400,7 @@ def main(argv=None) -> int:
     h = sub.add_parser("health", help="exit 0 if healthy; optionally ping an external heartbeat")
     h.add_argument("--ping-file", help="file holding the heartbeat URL (never printed)")
     sub.add_parser("report", help="results in four separate parts")
+    sub.add_parser("replay", help="same progression over each experiment version (read-only)")
     sub.add_parser("dashboard", help="write the read-only status page")
     m = sub.add_parser("manual", help="record what you did with a signal")
     m.add_argument("id")
@@ -417,7 +425,7 @@ def main(argv=None) -> int:
     try:
         cfg = load_config(args.config)
         return {"check": cmd_check, "feasibility": cmd_feasibility, "run": cmd_run,
-                "status": cmd_status, "health": cmd_health, "stop": cmd_stop, "report": cmd_report,
+                "status": cmd_status, "health": cmd_health, "replay": cmd_replay, "stop": cmd_stop, "report": cmd_report,
                 "dashboard": cmd_dashboard, "manual": cmd_manual,
                 "news-check": cmd_news_check, "news-report": cmd_news_report,
                 "news-events": cmd_news_events}[args.cmd](args, cfg)
