@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import decision_v2, plan
+from . import decision_v2, plan, sessions
 from .config import DemoConfig
 from .journal import Journal
 
@@ -224,7 +224,7 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
     """Close trades held hold_days, then rate the universe stocks that just reported."""
     rows = []
     for t in broker.our_open_trades():
-        if t.get("status") == "open" and np.busday_count(t["opened"], trade_date) >= cfg.hold_days:
+        if t.get("status") == "open" and sessions.exit_due(t["opened"], trade_date, cfg.hold_days):
             if dry_run:
                 rows.append(journal.write("close_dry_run", instrument=t["instrument"], trade_id=t["id"]))
             else:

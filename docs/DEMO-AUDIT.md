@@ -73,9 +73,10 @@ Fixed, each with a test that failed before the fix (`tests/test_demo_paper.py`, 
   baseline as a rough control, since it flips direction on strategy-dependent exits. 150 trades is a
   trade-count milestone, not proof.
 
-Not changed (rules are frozen; a change restarts the 150-trade count) — decision for Irakli:
-
-- **Hold length.** Exit is ordered on the first run where `busday_count(fill day, run day) >= 5`, and
-  fills at the following open, so a trade is held about 6 sessions from its entry open, not 5.
-  `busday_count` also ignores NYSE holidays. Options: keep and document (current), or order the exit
-  one run earlier. Either is a rule change.
+**Rule change, decided by Irakli 2026-11-05 (hold length).** Before: the exit was ordered when
+`busday_count(fill day, run day) >= 5` and filled at the next open, so trades were held about 6
+sessions, and NYSE holidays were ignored. Now (`demo/sessions.py`): a trade filled at the open of
+session D with hold_days=5 exits at the open of session D+5 (five full sessions held); the order is
+placed on the run before that open, holidays come from a fixed NYSE list for 2026-2028 (extend it
+yearly). `score_ratings` uses the same window. The 150-trade count restarts from 2026-11-05; at the
+time of the change all 12 orders were still pending and none had closed, so no result was lost.

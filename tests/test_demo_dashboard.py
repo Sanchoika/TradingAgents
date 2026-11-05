@@ -103,7 +103,7 @@ def test_snapshot_reads_saved_files_and_never_changes_them(tmp_path):
     assert pos["AMD"]["status"] == "pending" and pos["AMD"]["mark"]["close"] == 210.0
     assert "unrealized" not in pos["AMD"]["mark"]                         # not filled: no P&L
     assert pos["NVDA"]["mark"]["unrealized"] == pytest.approx(100.0)
-    assert pos["NVDA"]["planned_exit_request"] == "2026-11-10"             # 5 weekdays after the fill
+    assert pos["NVDA"]["planned_exit_request"] == "2026-11-09"             # order the run before the 5th session after the fill ends
     assert pos["AAPL"]["exit_requested_on"] == "2026-11-05"
     assert pos["NVDA"]["decision_index"] is not None
     assert acct["realized_pl"] == 250.0 and acct["financing"] == -1.5
