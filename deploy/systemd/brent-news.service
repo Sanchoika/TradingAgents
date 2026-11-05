@@ -10,6 +10,7 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=/root/ta-brent
 Environment=PYTHONPATH=/root/ta-brent
+Environment=HOME=/root
 ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/brent.toml news-check --analyze
 Restart=on-failure
 RestartSec=20
