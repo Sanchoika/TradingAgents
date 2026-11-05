@@ -8,7 +8,7 @@ sessions (Irakli's decision, PR #22); the 150-trade count restarts 2026-11-05 wi
 stock test runs on the PC again (`TradingAgentsDemo` 08:00 ET, `TradingAgentsWatchdog` 09:30 ET, re-enabled). The server
 timers `ta-demo.timer` / `ta-watchdog.timer` are disabled and never fired; the server's copy of the journal was byte-identical
 to the PC's and is parked as `/root/.tradingagents/demo.rolled-back-20261105` (nothing deleted). The PC notes-pull task is
-disabled; the PC writes its own notes to `C:\Brain` again. The cutover scripts stay in `C:bt\cutover-11\` for a later,
+disabled; the PC writes its own notes to `C:\Brain` again. The cutover scripts stay in `C:bbt\cutover-11\` for a later,
 explicitly approved attempt. #11 is open again.
 
 
