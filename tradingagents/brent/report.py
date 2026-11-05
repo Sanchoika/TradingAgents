@@ -330,6 +330,10 @@ def status_lines(state: dict, locked: bool, now: datetime | None = None,
                    f"{b['day']}/{b['per_day']} last 24h; quiet window {b['quiet_window_et']}; "
                    f"refusals 24h {b['refusals_24h'] or 'none'}; tokens 24h {b['tokens_24h']}; "
                    f"median latency {b['latency_median_s']}s. {b['note']}")
+        sh = b.get("quiet_shadow_24h")
+        if sh:
+            out.append(f"quiet-window shadow ({sh['rule']}, not live): would have called {sh['would_call']}x "
+                       f"for {sh['urgent_items']} urgent items in 24h")
     if state.get("last_tick"):
         age = (now - datetime.fromisoformat(state["last_tick"])).total_seconds()
         out.append(f"last tick: {state['last_tick']} ({age:.0f}s ago)")

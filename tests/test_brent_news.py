@@ -445,3 +445,23 @@ def test_yahoo_feed_is_off_by_default(tmp_path):
     assert "yahoo" not in feeds and "google:brent" in feeds
     on = [f for f, _ in NewsCollector(tmp_path, get=lambda u: None, yahoo=news.fetch_yahoo).sources()]
     assert "yahoo" in on
+
+
+def test_quiet_window_shadow_logs_reserved_capacity_but_never_calls(tmp_path):
+    wed_8am = datetime(2026, 11, 4, 13, 0, tzinfo=UTC)
+    col, clock = make(tmp_path, google_text=rss(("OPEC+ agrees output cut - Reuters", "Wed, 04 Nov 2026 12:50:00 GMT")))
+    clock.t = wed_8am
+    col.poll()
+
+    def model(s, u):
+        raise AssertionError("no model call inside the quiet window")
+
+    first = analyze(col, model, Budget())
+    assert first["refused"].startswith("quiet window")
+    assert first["quiet_shadow"]["would_call"] and first["quiet_shadow"]["urgent_waiting"] == 1
+    clock.t += timedelta(minutes=5)
+    again = analyze(col, model, Budget())   # same urgent item: the shadow serves it only once
+    assert again["quiet_shadow"]["would_call"] is False and again["quiet_shadow"]["urgent_waiting"] == 0
+    use = news.budget_usage(tmp_path, clock.t, 6, 250, ("07:30", "10:30"))
+    assert use["quiet_shadow_24h"]["would_call"] == 1 and use["quiet_shadow_24h"]["urgent_items"] == 1
+    assert not [e for e in events(col) if e["event"] == "call_started"]
