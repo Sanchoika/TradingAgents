@@ -1,9 +1,13 @@
-"""Single-writer lock for a demo run: one process may change the account and journal at a time."""
+"""Single-writer lock for a demo run: one process may change the account and journal at a time.
+
+Uses an operating-system file lock (msvcrt on Windows, fcntl elsewhere). The OS drops the lock
+when its owner dies, so a crashed run never blocks the next one and no process-liveness probe
+(``os.kill(pid, 0)`` is not a probe on Windows) is needed.
+"""
 
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 
 
@@ -11,44 +15,59 @@ class RunLocked(RuntimeError):
     pass
 
 
-def _alive(pid: int) -> bool:
+def _try_lock(fh) -> bool:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:  # exists but not ours (or Windows quirks): assume alive
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
-    return True
+    except OSError:
+        return False
+
+
+def _unlock(fh) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
 
 
 class RunLock:
-    """Exclusive lock file holding the owner's pid. A dead owner or an old file is taken over."""
+    """Exclusive lock on ``path``. A second holder gets RunLocked; a dead owner's lock is gone."""
 
-    def __init__(self, path: str | Path, stale_after: float = 6 * 3600):
-        self.path, self.stale_after = Path(path), stale_after
+    def __init__(self, path: str | Path, stale_after: float = 0):  # stale_after kept for callers
+        self.path = Path(path)
+        self._fh = None
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
-            try:
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                if not self._stale():
-                    raise RunLocked(f"another run holds {self.path}; not starting a second writer") from None
-                self.path.unlink(missing_ok=True)
-                continue
-            with os.fdopen(fd, "w") as fh:
-                fh.write(str(os.getpid()))
-            return self
-        raise RunLocked(f"could not take {self.path}")
-
-    def _stale(self) -> bool:
-        try:
-            old = time.time() - self.path.stat().st_mtime > self.stale_after
-            pid = int(self.path.read_text().strip() or 0)
-        except (OSError, ValueError):
-            return True
-        return old or not _alive(pid)
+        fh = open(self.path, "a+")  # noqa: SIM115  (held open for the lock's lifetime)
+        if not _try_lock(fh):
+            fh.close()
+            raise RunLocked(f"another run holds {self.path}; not starting a second writer")
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
+        self._fh = fh
+        return self
 
     def __exit__(self, *exc):
-        self.path.unlink(missing_ok=True)
+        if self._fh:
+            _unlock(self._fh)
+            self._fh.close()
+            self._fh = None

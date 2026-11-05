@@ -535,7 +535,8 @@ def test_run_lock_is_single_writer(tmp_path):
         RunLock(tmp_path / "run.lock").__enter__()
     with RunLock(tmp_path / "run.lock"):   # released
         pass
-    (tmp_path / "run.lock").write_text("999999999")   # dead owner is taken over
+    # a leftover file from a crashed owner (no live lock) does not block
+    (tmp_path / "run.lock").write_text("999999999")
     with RunLock(tmp_path / "run.lock"):
         pass
 

@@ -66,7 +66,7 @@ def cmd_run(args, cfg) -> int:
     from .lock import RunLock, RunLocked
 
     try:
-        with RunLock(Path(cfg.journal_dir) / "run.lock", stale_after=6 * 3600):
+        with RunLock(Path(cfg.journal_dir) / "run.lock"):
             return _run_locked(args, cfg)
     except RunLocked as exc:  # a second writer must never touch the account
         print(f"error: {exc}", file=sys.stderr)
