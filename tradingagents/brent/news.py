@@ -501,9 +501,7 @@ class Budget:
 def budget_usage(folder: str | Path, now: datetime, per_hour: int, per_day: int,
                  quiet: tuple[str, str]) -> dict:
     """Model-call use from the news log: hourly, daily, refusals and the quiet window, separately."""
-    path = Path(folder) / "news.jsonl"
-    ev = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()] \
-        if path.exists() else []
+    ev = read_since(Path(folder) / "news.jsonl", now - timedelta(days=1, hours=1))
     an = [(datetime.fromisoformat(e["ts"]), e) for e in ev if e["event"] == "analysis"]
     called = [datetime.fromisoformat(t) for t in count_calls(ev)]
     tokens = sum(((e.get("usage") or {}).get("total_tokens") or 0) for t, e in an
@@ -540,10 +538,43 @@ def default_model(provider: str = "chatgpt", model: str = "gpt-6-luna") -> Calla
     return call
 
 
+def read_since(path: Path, since: datetime, chunk: int = 1 << 20) -> list[dict]:
+    """Events with ts >= since, reading the append-only log from its end in chunks, so a tick
+    costs the size of the window, not of the whole history. Lines without a ts are kept."""
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    with path.open("rb") as fh:
+        fh.seek(0, 2)
+        pos, tail = fh.tell(), b""
+        done = False
+        while pos > 0 and not done:
+            step = min(chunk, pos)
+            pos -= step
+            fh.seek(pos)
+            buf = fh.read(step) + tail
+            lines = buf.split(b"\n")
+            tail = lines[0] if pos > 0 else b""
+            for raw in reversed(lines[1:] if pos > 0 else lines):
+                if not raw.strip():
+                    continue
+                try:
+                    e = json.loads(raw)
+                except ValueError:
+                    continue
+                if e.get("ts") and datetime.fromisoformat(e["ts"]) < since:
+                    done = True
+                    break
+                out.append(e)
+    out.reverse()
+    return out
+
+
+WORKING_WINDOW = timedelta(hours=72)   # >= the longest freshness window (24h) and the 3-day dedup
+
+
 def _events(collector) -> list[dict]:
-    p = collector.log_path
-    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()] \
-        if p.exists() else []
+    return read_since(collector.log_path, collector.now() - WORKING_WINDOW)
 
 
 def pending_items(collector, events: list[dict] | None = None) -> list[dict]:
