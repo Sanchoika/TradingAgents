@@ -364,3 +364,21 @@ def test_source_backoff_is_per_source_and_recovers(tmp_path):
     clock[0] += timedelta(minutes=5)
     c.poll()
     assert c.st["feeds"]["a"]["streak"] == 0 and c.st["feeds"]["a"]["next_try"] is None
+
+
+def test_read_since_matches_full_read_across_chunk_boundaries(tmp_path):
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from tradingagents.brent.news import read_since
+
+    t0 = datetime(2026, 11, 1, tzinfo=UTC)
+    p = tmp_path / "news.jsonl"
+    rows = [{"ts": (t0 + timedelta(minutes=i)).isoformat(), "event": "x", "i": i, "pad": "é" * 50}
+            for i in range(500)]
+    p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    since = t0 + timedelta(minutes=123)
+    for chunk in (64, 1000, 1 << 20):
+        got = read_since(p, since, chunk=chunk)
+        assert [e["i"] for e in got] == list(range(123, 500))
+    assert read_since(tmp_path / "none.jsonl", since) == []

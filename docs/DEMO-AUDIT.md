@@ -1,8 +1,10 @@
 # Demo runner audit (2026-11-02)
 
-**Status 2026-11-02:** items 1, 4-10 and 12's config are built and merged (PRs 4-6; 6 adds the
-EDGAR date check and sector comparison). Open: 2 and 3 and 12 need Irakli to run a scheduler
-command or enter a Windows password; 11 (hermes-server) and Telegram status/pause are not built.
+**Status 2026-11-05:** items 1-10 are built and merged (PRs 4-6, 11-20). #2 (runs whether logged
+on or not, wakes the PC) and #3 (watchdog 09:30) are done on the PC. #12 was dropped. Open: #11
+(hermes-server cutover, single writer, needs Irakli's "cut over") and Telegram status/pause. If the PC
+is fully off at 08:00 that day is skipped; "run as soon as possible" would change fill timing, so
+it is left off. Hold length is about 6 sessions, not 5: a rule change, Irakli's decision.
 
 
 Audit of the paper forward test as configured on the PC: earnings mode, paper
