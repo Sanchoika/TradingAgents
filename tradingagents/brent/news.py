@@ -63,6 +63,17 @@ def backoff_seconds(streak: int) -> int:
     return min(BACKOFF_MAX_S, BACKOFF_BASE_S * 2 ** (streak - BACKOFF_FREE_FAILURES - 1))
 
 
+def eia_prerelease(feed: str, exc: Exception, now: datetime) -> bool:
+    """A 403 on the WPSR files before the Wed 10:30 ET (holiday Thu 12:00) release = not public yet."""
+    if not feed.startswith("eia:"):
+        return False
+    if getattr(getattr(exc, "response", None), "status_code", None) != 403:
+        return False
+    ny = now.astimezone(NY)
+    minute = ny.hour * 60 + ny.minute
+    return ny.weekday() in (2, 3) and 8 * 60 <= minute <= 12 * 60 + 30
+
+
 def source_function(feed: str) -> str:
     if feed.startswith("eia:"):
         return "official_data"
@@ -194,7 +205,8 @@ def fetch_eia(get, feed: str, url: str) -> list[Item]:
 class NewsCollector:
     def __init__(self, folder: str | Path, get: Callable | None = None,
                  now: Callable[[], datetime] = lambda: datetime.now(UTC),
-                 yahoo: Callable | None = fetch_yahoo, check_content: int = 3):
+                 yahoo: Callable | None = None, check_content: int = 3):
+        # Yahoo off by default: it returned no news for BZ=F/CL=F on all 1,073 server polls (Nov 3-5).
         self.dir = Path(folder)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.dir / "news.jsonl"
@@ -245,6 +257,11 @@ class NewsCollector:
             try:
                 items = fn()
             except Exception as exc:
+                if eia_prerelease(feed, exc, self.now()):
+                    f["waiting"] = f.get("waiting", 0) + 1   # not a failure: no streak, no backoff
+                    self.write("eia_not_released", feed=feed, status=403,
+                               seconds=round(time.monotonic() - t0, 2))
+                    continue
                 f["fail"] += 1
                 f["streak"] = f.get("streak", 0) + 1
                 delay = backoff_seconds(f["streak"])
