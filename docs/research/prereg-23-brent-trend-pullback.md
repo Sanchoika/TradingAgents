@@ -36,3 +36,11 @@ shadow only; no automatic promotion.
 Identical to prereg-22 (same cost model as prereg-21; development 2013-2020 code check only; holdout 2021-01..
 download date, once; six criteria at alpha 0.05/2 with criterion 6 at >=200 trades; INCONCLUSIVE if not computable;
 forward shadow >= 60 trades before any alert consideration). Variants attempted: 1. Family size: 2.
+
+## Result (run once on the PC, 2026-11-05, frozen code and data unchanged)
+
+Verdict: **FAIL, 0 of 6 criteria.** Holdout 2,838 trades: mean -0.365R, win rate 26.7%, 56% long;
+exits 1,860 stop / 929 time / 49 gap; median spread 0.12R. Gross (no costs): -0.013R — about
+break-even before costs, same as the earlier NAS100 pullback (row 19), confirming the low prior
+stated when this was frozen. Stress (2x costs): -0.597R. Development: 3,899 trades, -0.447R. Not
+promoted. Kept here as a negative result. Same data file as prereg-22/prereg-21.
