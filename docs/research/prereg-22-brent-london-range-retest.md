@@ -67,3 +67,12 @@ outcome, separately from ENTRY alerts. A candidate may be considered for alerts 
 ## Limits stated in advance
 OANDA CFD quotes, not ICE futures; M1 hides spikes inside a minute; real slippage may exceed one spread; the
 winter/summer London offset; financing rate history unknown (45%/yr assumed).
+
+## Result (run once on the PC, 2026-11-05, frozen code and data unchanged)
+
+Verdict: **FAIL, 0 of 6 criteria.** Holdout 557 trades: mean -0.328R, win rate 25.9%, 51% long; exits
+367 stop / 182 time / 8 gap; median spread 0.099R. Gross (no costs): -0.020R — essentially no edge
+before costs, and costs alone turn it clearly negative. Stress (2x costs): -0.551R. Development
+(2013-2020, code check only): 571 trades, -0.522R. Not promoted. Kept here as a negative result.
+Data: BCO_USD M1 (sha256 68f853b5e8d1...), same file used for prereg-21. Output:
+C:\bbt\brent-candidates-2026-11-05\candidates-results.json on the PC.
