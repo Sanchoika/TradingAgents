@@ -758,3 +758,31 @@ def test_status_shows_effective_settings_and_budget(tmp_path):
     assert "operating range 80-115" in txt and "mid-price gate" in txt
     assert "model budget (shared, rolling): 0/12 last hour, 0/250 last 24h" in txt
     assert "phone display: not measured" in txt
+
+
+def test_health_command_and_progress_checks(tmp_path, monkeypatch, capsys):
+    from tradingagents.brent import __main__ as m
+    from tradingagents.brent.report import overall_health
+
+    mon, client, sender, clock, store = make(tmp_path)
+    mon.tick()
+    st = store.state()
+    healthy_news = {"running": True, "status": "checked", "why": "",
+                    "last_poll_attempt": clock.t.isoformat()}
+    assert overall_health(st, True, healthy_news, clock.t) == []
+    later = clock.t + timedelta(seconds=200)            # process alive, but nothing progressing
+    st2 = {**st, "last_tick": later.isoformat()}
+    assert "no new quote for 120s" in overall_health(st2, True, healthy_news, later)
+    stale_news = {**healthy_news, "last_poll_attempt": (later - timedelta(minutes=20)).isoformat()}
+    assert any("not polling" in b for b in overall_health(st2, True, stale_news, later))
+
+    pings = []
+    monkeypatch.setattr(m, "ping_url", lambda url, timeout=10.0: pings.append(url) or True)
+    ping_file = tmp_path / "hb"
+    ping_file.write_text("https://hc.example/abc\n")
+    monkeypatch.setattr(m, "load_config", lambda p: mon.cfg)
+    monkeypatch.setattr("tradingagents.brent.report.news_health", lambda *a, **k: healthy_news)
+    monkeypatch.setattr(m.Store, "is_locked", lambda self: False)   # monitor "not running"
+    assert m.main(["health", "--ping-file", str(ping_file)]) == 1
+    assert pings == ["https://hc.example/abc/fail"]
+    assert "hc.example" not in capsys.readouterr().out               # URL never printed

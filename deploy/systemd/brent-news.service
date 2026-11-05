@@ -1,0 +1,20 @@
+# Brent news collector + classifier (no OANDA token; uses the ChatGPT sign-in file).
+[Unit]
+Description=Brent news collector
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/root/ta-brent
+Environment=PYTHONPATH=/root/ta-brent
+ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/brent.toml news-check --analyze
+Restart=on-failure
+RestartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

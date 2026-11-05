@@ -1,0 +1,23 @@
+# Brent price monitor (alerts only; no orders). Install: see docs/HOSTING.md.
+[Unit]
+Description=Brent alert monitor (advisory, paper only)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/root/ta-brent
+Environment=PYTHONPATH=/root/ta-brent
+# Root-only file (mode 600) holding OANDA_API_KEY=... : created by Irakli after approving the plan.
+EnvironmentFile=/etc/tradingagents/brent.env
+ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/brent.toml run
+Restart=on-failure
+RestartSec=15
+# The monitor's own lock keeps a single instance; systemd restarts only after a failure.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
