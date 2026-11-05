@@ -1,10 +1,13 @@
 # Demo runner audit (2026-11-02)
 
-**Status 2026-11-05:** items 1-10 are built and merged (PRs 4-6, 11-20). #2 (runs whether logged
-on or not, wakes the PC) and #3 (watchdog 09:30) are done on the PC. #12 was dropped. Open: #11
-(hermes-server cutover, single writer, needs Irakli's "cut over") and Telegram status/pause. If the PC
-is fully off at 08:00 that day is skipped; "run as soon as possible" would change fill timing, so
-it is left off. Hold length is about 6 sessions, not 5: a rule change, Irakli's decision.
+**Status 2026-11-05 (end of day):** items 1-10 are built, merged and deployed on the PC. #2 (runs
+whether logged on or not, wakes the PC) and #3 (watchdog 09:30) are done. #12 was dropped. Telegram
+status/pause became the phone control page (docs/CONTROL.md, installed). Hold length is now exactly 5 NYSE
+sessions (Irakli's decision, PR #22); the 150-trade count restarts 2026-11-05 with nothing lost.
+Only #11 is open: the hermes-server cutover is prepared but not run. It is postponed by Irakli and
+starts on his "cut over" on a weekend. Plan and scripts are on the PC in `C:\bbt\cutover-11-plan.md` and
+`C:\bbt\cutover-11\`. If the PC is fully off at 08:00 that day is skipped; "run as soon as possible" would
+change fill timing, so it is left off.
 
 
 Audit of the paper forward test as configured on the PC: earnings mode, paper
