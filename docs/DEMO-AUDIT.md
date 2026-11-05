@@ -4,10 +4,16 @@
 whether logged on or not, wakes the PC) and #3 (watchdog 09:30) are done. #12 was dropped. Telegram
 status/pause became the phone control page (docs/CONTROL.md, installed). Hold length is now exactly 5 NYSE
 sessions (Irakli's decision, PR #22); the 150-trade count restarts 2026-11-05 with nothing lost.
-Only #11 is open: the hermes-server cutover is prepared but not run. It is postponed by Irakli and
-starts on his "cut over" on a weekend. Plan and scripts are on the PC in `C:\bbt\cutover-11-plan.md` and
-`C:\bbt\cutover-11\`. If the PC is fully off at 08:00 that day is skipped; "run as soon as possible" would
-change fill timing, so it is left off.
+#11 is done (cut over 2026-11-05 ~05:10 UTC on Irakli's word): the run and watchdog now execute on
+hermes-server as `ta-demo.timer` (Mon-Fri 08:00 America/New_York) and `ta-watchdog.timer` (09:30), from
+`/root/TradingAgents` with the journal in `/root/.tradingagents/demo`. The data was copied with the PC frozen
+and checksums matched; `check` was identical on both machines. The PC tasks `TradingAgentsDemo` and
+`TradingAgentsWatchdog` are disabled, never to run alongside the server. Run notes go to
+`/root/ta-dashboard/notes/trading-demo`; the PC task `TradingAgentsPullNotes` (weekdays 09:00 ET) copies them into
+`C:\Brain\outputs\trading-demo`. Rollback: disable the two server timers, copy the journal folder back, re-enable
+the PC tasks. A missed day stays missed (`Persistent=false`), as before. The first server run is 2026-11-05 08:00 ET.
+Nothing on the audit list is open. Follow-up: the control page's "Retry a failed stock run" is still greyed out
+(it needs a code change now that the runner is hosted here).
 
 
 Audit of the paper forward test as configured on the PC: earnings mode, paper
