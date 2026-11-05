@@ -1,0 +1,4 @@
+03f6937a2af6665c01c5fdd30c521abf217e95ea5f149d2a95f19a1f20e61587  docs/research/prereg-22-brent-london-range-retest.md
+76f3e7085e82ec55cc7e07d949c8a76c22a3fb4cfa84ff582e9c347e35ec365b  docs/research/prereg-23-brent-trend-pullback.md
+03e01621299b634d65fd4f416aeb97d14c2951e8e7fa33dce10b7881a7bfe637  tradingagents/brent/research/candidates.py
+b932e1380c63a9fc32bbdb2deb170a36bc3f4ec44286c904532780ced6eab1e5  tests/test_brent_candidates.py
