@@ -4,16 +4,12 @@
 whether logged on or not, wakes the PC) and #3 (watchdog 09:30) are done. #12 was dropped. Telegram
 status/pause became the phone control page (docs/CONTROL.md, installed). Hold length is now exactly 5 NYSE
 sessions (Irakli's decision, PR #22); the 150-trade count restarts 2026-11-05 with nothing lost.
-#11 is done (cut over 2026-11-05 ~05:10 UTC on Irakli's word): the run and watchdog now execute on
-hermes-server as `ta-demo.timer` (Mon-Fri 08:00 America/New_York) and `ta-watchdog.timer` (09:30), from
-`/root/TradingAgents` with the journal in `/root/.tradingagents/demo`. The data was copied with the PC frozen
-and checksums matched; `check` was identical on both machines. The PC tasks `TradingAgentsDemo` and
-`TradingAgentsWatchdog` are disabled, never to run alongside the server. Run notes go to
-`/root/ta-dashboard/notes/trading-demo`; the PC task `TradingAgentsPullNotes` (weekdays 09:00 ET) copies them into
-`C:\Brain\outputs\trading-demo`. Rollback: disable the two server timers, copy the journal folder back, re-enable
-the PC tasks. A missed day stays missed (`Persistent=false`), as before. The first server run is 2026-11-05 08:00 ET.
-Nothing on the audit list is open. Follow-up: the control page's "Retry a failed stock run" is still greyed out
-(it needs a code change now that the runner is hosted here).
+#11 was cut over on 2026-11-05 ~05:10 UTC and **rolled back the same day (~11:05 UTC) at Irakli's choice**: the
+stock test runs on the PC again (`TradingAgentsDemo` 08:00 ET, `TradingAgentsWatchdog` 09:30 ET, re-enabled). The server
+timers `ta-demo.timer` / `ta-watchdog.timer` are disabled and never fired; the server's copy of the journal was byte-identical
+to the PC's and is parked as `/root/.tradingagents/demo.rolled-back-20261105` (nothing deleted). The PC notes-pull task is
+disabled; the PC writes its own notes to `C:\Brain` again. The cutover scripts stay in `C:bt\cutover-11\` for a later,
+explicitly approved attempt. #11 is open again.
 
 
 Audit of the paper forward test as configured on the PC: earnings mode, paper
