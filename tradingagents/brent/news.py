@@ -522,19 +522,23 @@ def budget_usage(folder: str | Path, now: datetime, per_hour: int, per_day: int,
             "note": "calls, not money; tokens are reported usage, not a bill or remaining quota"}
 
 
-def default_model(provider: str = "chatgpt", model: str = "gpt-6-luna") -> Callable[[str, str], tuple]:
-    """Existing repo integration (ChatGPT plan sign-in by default). Returns (text, usage)."""
+def default_model(provider: str = "chatgpt", model: str = "gpt-6-luna",
+                  effort: str | None = None) -> Callable[[str, str], tuple]:
+    """Existing repo integration (ChatGPT plan sign-in by default). Returns (text, usage).
+    ``effort`` is passed as reasoning_effort only when set; unset means the provider default,
+    which is what the live collector uses today (it never sets one)."""
     from tradingagents.llm_clients.factory import create_llm_client
 
     # max_retries=0: every attempt is a call we count; client-internal retries would be invisible.
-    llm = create_llm_client(provider, model, max_retries=0).get_llm()
+    kw = {"reasoning_effort": effort} if effort else {}
+    llm = create_llm_client(provider, model, max_retries=0, **kw).get_llm()
 
     def call(system: str, user: str):
         msg = llm.invoke([("system", system), ("user", user)])
         content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
         return content, getattr(msg, "usage_metadata", None) or {}
 
-    call.model_id = f"{provider}:{model}"
+    call.model_id = f"{provider}:{model}" + (f":{effort}" if effort else "")
     return call
 
 

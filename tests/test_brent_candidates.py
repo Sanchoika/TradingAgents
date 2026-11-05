@@ -124,3 +124,29 @@ def test_trend_signal_uses_only_completed_bars():
         assert 3 <= ts.hour < 12 and t_exit > ts
     trades, _ = c.run_trend(d)
     assert (trades.groupby("date").size() <= 2).all() if len(trades) else True
+
+
+def test_model_eval_scoring_and_fake_runs():
+    import json
+
+    from tradingagents.brent.research import model_eval as me
+
+    def perfect(system, user):
+        rows = []
+        for item, exp in me.CASES:
+            rows.append({"key": item["key"], "category": exp.get("category", "other"),
+                         "status": exp.get("status", "credible_report"), "event_time": None,
+                         "scope": exp.get("scope", "brent"), "relevant": exp.get("relevant", True),
+                         "mechanism": "m", "bias": exp.get("bias", "unclear"), "contradiction": "",
+                         "update_of_older_story": exp.get("update_of_older_story", False)})
+        return json.dumps(rows), {"total_tokens": 10}
+
+    perfect.model_id = "fake"
+    res = me.run_config("gpt-6-luna", "high", 1, make=lambda p, m, e: perfect)
+    assert res["runs"][0]["accuracy"] == 1.0 and res["runs"][0]["tokens"] == 10
+
+    def broken(system, user):
+        return "not json", {}
+
+    res = me.run_config("gpt-6-luna", None, 1, make=lambda p, m, e: broken)
+    assert res["runs"][0]["valid_json"] is False and res["effort"] == "provider default"
