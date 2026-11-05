@@ -1,0 +1,9 @@
+[Unit]
+Description=Brent health check + external heartbeat ping
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ta-brent
+Environment=PYTHONPATH=/root/ta-brent
+# /etc/tradingagents/heartbeat-url holds the external heartbeat URL (mode 600). Optional.
+ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/brent.toml health --ping-file /etc/tradingagents/heartbeat-url

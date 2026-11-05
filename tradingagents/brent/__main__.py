@@ -210,6 +210,38 @@ def cmd_report(args, cfg) -> int:
     return 0
 
 
+def ping_url(url: str, timeout: float = 10.0) -> bool:
+    """GET an external heartbeat URL (healthchecks-style). The URL is a secret: never printed."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (operator-set https URL)
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
+def cmd_health(args, cfg) -> int:
+    """Exit 0 when the monitor ticks and the news collector progresses, else 1 (one line each reason).
+
+    With --ping-file, also pings the external heartbeat URL stored in that file (root-only): the
+    URL on success, URL + /fail on a problem, so an outside service sees both a crashed process
+    and a dead host (no ping at all)."""
+    from .report import news_health, overall_health
+
+    store = Store(cfg.journal_dir)
+    nh = news_health(cfg.journal_dir, cfg=cfg)
+    bad = overall_health(store.state(), store.is_locked(), nh, datetime.now(UTC))
+    print("OK" if not bad else "DEGRADED: " + "; ".join(bad))
+    if args.ping_file:
+        url = Path(args.ping_file).read_text(encoding="utf-8").strip()
+        if url:
+            sent = ping_url(url if not bad else url.rstrip("/") + "/fail")
+            if not sent:
+                print("heartbeat ping failed (network or service)", file=sys.stderr)
+    return 1 if bad else 0
+
+
 def cmd_dashboard(args, cfg) -> int:
     from .report import write_page
 
@@ -346,6 +378,8 @@ def main(argv=None) -> int:
     sub.add_parser("status", help="show the monitor's saved state (offline)")
     st = sub.add_parser("stop", help="stop the running monitor (or --news: the news collector)")
     st.add_argument("--news", action="store_true", help="stop the news collector instead")
+    h = sub.add_parser("health", help="exit 0 if healthy; optionally ping an external heartbeat")
+    h.add_argument("--ping-file", help="file holding the heartbeat URL (never printed)")
     sub.add_parser("report", help="results in four separate parts")
     sub.add_parser("dashboard", help="write the read-only status page")
     m = sub.add_parser("manual", help="record what you did with a signal")
@@ -369,7 +403,7 @@ def main(argv=None) -> int:
     try:
         cfg = load_config(args.config)
         return {"check": cmd_check, "feasibility": cmd_feasibility, "run": cmd_run,
-                "status": cmd_status, "stop": cmd_stop, "report": cmd_report,
+                "status": cmd_status, "health": cmd_health, "stop": cmd_stop, "report": cmd_report,
                 "dashboard": cmd_dashboard, "manual": cmd_manual,
                 "news-check": cmd_news_check, "news-report": cmd_news_report}[args.cmd](args, cfg)
     except (OandaReadError, ValueError, OSError) as exc:

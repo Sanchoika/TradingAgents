@@ -231,11 +231,26 @@ def overall_health(state: dict, locked: bool, news: dict | None, now: datetime) 
         bad.append("price monitor has not ticked in 30s")
     if state.get("context_error"):
         bad.append("chart data refresh failing")
+    from .rules import market_closed_by_clock
+
+    if locked and not market_closed_by_clock(now):
+        lq = state.get("last_quote")
+        if state.get("ops", {}).get("quote_error_count", 0) >= 5:
+            bad.append("quotes failing")
+        elif lq and (now - datetime.fromisoformat(lq["fetched_at"])).total_seconds() > 120:
+            bad.append("no new quote for 120s")
     if news is None:
         bad.append("news collector not checked")
     else:
         if not news["running"]:
             bad.append("news collector not running")
+        lp = news.get("last_poll_attempt")
+        if news["running"] and lp:
+            try:
+                if (now - datetime.fromisoformat(lp)).total_seconds() > 15 * 60:
+                    bad.append("news collector alive but not polling for 15 min")
+            except ValueError:
+                pass
         if news["status"] not in ("checked", "pending_analysis"):
             bad.append(f"news {news['status']}: {news['why']}")
     return bad
