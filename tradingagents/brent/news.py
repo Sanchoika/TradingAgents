@@ -48,6 +48,19 @@ EIA_NOTE = ("EIA WPSR files are logged by version and time but not interpreted: 
             "count as news coverage. The Wednesday release window is a blackout instead.")
 
 
+BACKOFF_FREE_FAILURES = 2     # first failures retry at the normal poll rhythm
+BACKOFF_BASE_S = 60
+BACKOFF_MAX_S = 900
+
+
+def backoff_seconds(streak: int) -> int:
+    """Per-source retry delay: none for the first few failures, then doubling up to 15 minutes.
+    The next attempt after the delay is the recovery probe; one success clears the streak."""
+    if streak <= BACKOFF_FREE_FAILURES:
+        return 0
+    return min(BACKOFF_MAX_S, BACKOFF_BASE_S * 2 ** (streak - BACKOFF_FREE_FAILURES - 1))
+
+
 def source_function(feed: str) -> str:
     if feed.startswith("eia:"):
         return "official_data"
@@ -222,16 +235,27 @@ class NewsCollector:
         self.st["last_poll_at"] = _iso(self.now())   # heartbeat, even when every feed fails
         for feed, fn in self.sources():
             f = self.st["feeds"].setdefault(feed, {"ok": 0, "fail": 0})
+            nxt = f.get("next_try")
+            if nxt and self.now() < datetime.fromisoformat(nxt):
+                f["skipped"] = f.get("skipped", 0) + 1   # backing off: this source only
+                continue
             t0 = time.monotonic()
             try:
                 items = fn()
             except Exception as exc:
                 f["fail"] += 1
+                f["streak"] = f.get("streak", 0) + 1
+                delay = backoff_seconds(f["streak"])
+                f["next_try"] = _iso(self.now() + timedelta(seconds=delay)) if delay else None
                 f["last_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
                 self.write("fetch_error", feed=feed, error=f["last_error"],
                            seconds=round(time.monotonic() - t0, 2))
                 continue
+            if f.get("streak"):
+                self.write("source_recovered", feed=feed, after_failures=f["streak"])
             f["ok"] += 1
+            f["streak"] = 0
+            f["next_try"] = None
             f["last_ok"] = _iso(self.now())
             self.write("fetch_ok", feed=feed, items=len(items), seconds=round(time.monotonic() - t0, 2))
             for it in items:
