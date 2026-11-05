@@ -275,8 +275,13 @@ def _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halt
                                       rating=rating, target=target, current=0, actions=steps,
                                       decision=decision[:4000],
                                       report=getattr(analyze, "reports", {}).get(ticker)))
-            rows.append(journal.write("decision_v2", ticker=ticker, trade_date=trade_date, rating=rating,
-                                      **decision_v2.interpret(rating, target, decision, cfg.hold_days)))
+            try:   # shadow only: it must never be able to skip the real paper order
+                rows.append(journal.write("decision_v2", ticker=ticker, trade_date=trade_date,
+                                          rating=rating, **decision_v2.interpret(
+                                              rating, target, decision, cfg.hold_days)))
+            except Exception as exc:
+                rows.append(journal.write("decision_v2_error", ticker=ticker,
+                                          error=f"{type(exc).__name__}: {exc}"))
             if steps == ["open"]:
                 rows.append(_open(broker, cfg, journal, ticker, rating, target, nav, dry_run))
         except Exception as exc:
