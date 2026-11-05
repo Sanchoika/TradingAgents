@@ -50,3 +50,20 @@ when it was built and warns when it is stale.
 `python -m http.server 8765 --directory %USERPROFILE%\.tradingagents\demo\site --bind 127.0.0.1`
 serves it at http://127.0.0.1:8765 on the PC itself. Only works while the PC is on;
 do not bind it to 0.0.0.0.
+
+## Stale-copy protection (2026-11-05)
+
+The dashboard sync must never let an older snapshot overwrite a newer one (for example a PC that was
+offline and then pushes yesterday's page after the server already published today's). The receiving
+side now checks `built_at` first:
+
+```
+tar -C site -cf - . | ssh root@hermes-server "cd /root/ta-brent && python -m tradingagents.demo.syncguard receive /root/ta-dashboard"
+```
+
+It accepts equal or newer snapshots, refuses older ones (exit 3, logged as `refused_stale`), keeps the
+previous copy as `/root/ta-dashboard.prev`, rejects archives with absolute or `..` paths or links, and logs
+each decision in `/root/ta-dashboard.sync-log.jsonl`. Put this form in `dashboard_sync_command` in demo.toml.
+
+Offline PC: the server copy is the record. When the PC returns, the Obsidian notes are written from the
+server's newer files; a note whose server source is older than the vault copy is left alone.
