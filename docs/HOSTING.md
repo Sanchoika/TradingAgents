@@ -4,12 +4,12 @@
 and `brent-control` run as enabled systemd units; the tmux sessions are gone (only `tbot` remains). The token
 is in `/etc/tradingagents/brent.env` (root, 600), so restarts need no retype. The units put `/root/.local/bin`
 on PATH (PR #25): without it `hermes send` failed with exit 127 and alerts were silently not delivered.
-`/etc/tradingagents/heartbeat-url` is empty, so there is no external heartbeat yet (decision 2 below).
+`/etc/tradingagents/heartbeat-url` is empty: Irakli chose to skip the external heartbeat (2026-11-05), so a whole-host outage is not alerted. A host reboot was tested the same day: everything Brent came back in about 30 s with no token retype.
 A full host reboot has not been tested.
 
 Before 2026-11-05: Brent ran in two tmux sessions (`brent` monitor, news collector). A crash or
 reboot left them stopped. The files in `deploy/systemd/` replace tmux with supervised services.
-**Decision 1 (stored token) approved by Irakli 2026-11-05;** decision 2 (external heartbeat account) is still open. Install with `deploy/install-brent-services.sh` (needs a terminal: Irakli types the token at the hidden prompt). Note: an OANDA practice token cannot be scoped read-only; Brent's code never places orders, but the token itself could, so it is practice-only and revocable.
+**Decision 1 (stored token) approved by Irakli 2026-11-05;** decision 2 (external heartbeat) was skipped by Irakli. Install with `deploy/install-brent-services.sh` (needs a terminal: Irakli types the token at the hidden prompt). Note: an OANDA practice token cannot be scoped read-only; Brent's code never places orders, but the token itself could, so it is practice-only and revocable.
 
 ## 1. How the OANDA practice token survives a reboot (needs approval)
 
@@ -27,7 +27,7 @@ read-only use by this code (Brent never places orders). What this does and does 
 
 Until approved, `start-brent-monitor.bat` (double-click, retype once) remains the way to start it.
 
-## 2. External heartbeat (needs approval; one account)
+## 2. External heartbeat (skipped by Irakli 2026-11-05; kept here if wanted later)
 
 A heartbeat sent from the same server cannot report that the server died. Proposal: a free
 Healthchecks.io check (or any similar service): `brent-health.timer` pings its URL every minute
