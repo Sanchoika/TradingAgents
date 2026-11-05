@@ -100,7 +100,7 @@ def rating_decisions(events: list[dict]) -> list[dict]:
 def score_ratings(decisions: list[dict], bars, hold_days: int = 5, today: str | None = None) -> dict:
     """How each rating did over the next ``hold_days``, whether or not it was traded.
 
-    Move = next daily open after the rating date to the open ``hold_days + 1`` bars
+    Move = next daily open after the rating date to the open ``hold_days`` bars
     later, the same window a paper trade holds. It uses mid prices, so it
     measures the call, not the costs. Ratings whose window has not finished
     are counted as pending.
@@ -117,11 +117,11 @@ def score_ratings(decisions: list[dict], bars, hold_days: int = 5, today: str | 
             df = bars(d["ticker"], today).dropna(subset=["Open"]).reset_index(drop=True)
             dates = pd.to_datetime(df["Date"]).dt.date.astype(str)
             later = df.index[dates > d["trade_date"]]
-            if len(later) <= hold_days + 1:
+            if len(later) <= hold_days:
                 pending += 1
                 continue
             i = later[0]
-            tiers[d["rating"]].append(100.0 * (float(df.Open[i + hold_days + 1]) / float(df.Open[i]) - 1))
+            tiers[d["rating"]].append(100.0 * (float(df.Open[i + hold_days]) / float(df.Open[i]) - 1))
         except Exception:
             errors += 1
     by_rating = {r: {"n": len(v), "mean_move_pct": round(statistics.fmean(v), 2)}

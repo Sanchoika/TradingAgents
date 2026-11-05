@@ -19,7 +19,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-import numpy as np
+from . import sessions
 
 SCHEMA = 1
 # Fields copied from the config. Commands, paths and anything secret are left out on purpose.
@@ -65,10 +65,10 @@ def _read_journal(path: Path):
 
 
 def _planned_exit(filled_on: str | None, hold_days: int) -> str | None:
-    """First run date on which the hold rule asks for the exit (weekdays only, holidays not counted)."""
+    """First run date on which the hold rule asks for the exit (NYSE sessions; exits at the open of the Nth session after the fill)."""
     if not filled_on:
         return None
-    return str(np.busday_offset(filled_on, hold_days, roll="forward"))
+    return sessions.planned_exit_run(filled_on, hold_days)
 
 
 def _report_file(path: str | None) -> Path | None:

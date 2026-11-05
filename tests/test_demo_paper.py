@@ -413,8 +413,8 @@ def test_score_ratings_counts_every_rating_and_skips_dry_runs():
         return pd.DataFrame({"Date": days, "Open": [100.0 + i for i in range(10)]})
 
     out = score_ratings(decisions, bars, hold_days=5, today="2026-01-20")
-    # entry = open on 2026-01-05 (101), exit 6 bars later (107)
-    assert out["by_rating"]["Buy"] == {"n": 1, "mean_move_pct": round(600 / 101, 2)}
+    # entry = open on 2026-01-05 (101), exit 5 bars later (106)
+    assert out["by_rating"]["Buy"] == {"n": 1, "mean_move_pct": round(500 / 101, 2)}
     assert out["by_rating"]["Hold"]["n"] == 1
     assert out["pending"] == 1  # DDD's window has not finished
     assert out["directional"]["hit_rate"] == 1.0
@@ -611,3 +611,17 @@ def test_decision_v2_crash_does_not_skip_order(tmp_path, monkeypatch):
                     now=datetime(2026, 11, 3, 13, tzinfo=UTC), edgar=lambda t: [])
     assert any(r["event"] == "decision_v2_error" for r in rows)
     assert any(r["event"] == "open" for r in rows)
+
+
+def test_hold_is_exactly_five_sessions_and_counts_holidays():
+    from tradingagents.demo import sessions
+    # filled at Tue 2026-11-03 open: sessions 3,4,5,6,9; the exit order is due on the Mon 11-09 run
+    # and fills at the Tue 11-10 open, i.e. five full sessions held
+    assert not sessions.exit_due("2026-11-03", "2026-11-06", 5)
+    assert sessions.exit_due("2026-11-03", "2026-11-09", 5)
+    assert sessions.planned_exit_run("2026-11-03", 5) == "2026-11-09"
+    # Thanksgiving 2026-11-26 is not a session: fill Mon 11-23 -> sessions 23,24,25,27,30
+    assert sessions.planned_exit_run("2026-11-23", 5) == "2026-11-30"
+    assert not sessions.exit_due("2026-11-23", "2026-11-27", 5)
+    assert sessions.exit_due("2026-11-23", "2026-11-30", 5)
+    assert sessions.covered("2026-11-03") and not sessions.covered("2029-01-02")
