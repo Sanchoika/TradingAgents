@@ -3,8 +3,8 @@
 # Everything below is the default except where noted; see docs/BRENT-ALERTS.md.
 
 instrument = "BCO_USD"
-range_low = 100.0          # your operating range for NEW entry suggestions (USD)
-range_high = 120.0
+range_low = 80.0           # your operating range for NEW entry suggestions (USD); mid-price gate, entry zone must also fit
+range_high = 115.0
 
 validity_seconds = 60      # max time to act, counted from the final quote's timestamp
 min_usable_seconds = 30    # suppress if less is left after the expected Telegram delay
@@ -26,3 +26,8 @@ journal_dir = "~/.tradingagents/brent"
 # Telegram alerts for the combined news + chart arm. false = log and paper-track only.
 alerts_enabled = false     # read every 60 s while running: no restart needed
 # report_base_url = "https://hermes-server.taildb3e4d.ts.net/brent"   # alert links to signals/<id>.html
+
+# News/research model budget (shared by every Brent model call, retries included). Ceilings, not targets.
+llm_per_hour = 12          # 2026-11-05 starting proposal; lower it if the provider limits you
+llm_per_day = 250          # rolling 24 hours
+# llm_quiet_et = ["07:30", "10:30"]   # weekday window kept free for the morning stock bot

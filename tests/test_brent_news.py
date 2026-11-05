@@ -263,3 +263,30 @@ def test_google_redirect_page_is_not_counted_readable(tmp_path):
 def test_percentiles_are_ordered():
     xs = [2.4, 3.2]
     assert news._pct(xs, 0.5) == 2.4 and news._pct(xs, 0.9) == 3.2 and news._pct([], 0.5) is None
+
+
+def test_budget_defaults_and_rolling_boundaries():
+    from datetime import UTC, datetime, timedelta
+
+    from tradingagents.brent.config import BrentConfig
+
+    cfg = BrentConfig()
+    assert (cfg.llm_per_hour, cfg.llm_per_day) == (12, 250)
+    b = Budget(cfg.llm_per_hour, cfg.llm_per_day)
+    now = datetime(2026, 11, 7, 16, 0, tzinfo=UTC)  # Saturday: outside the weekday quiet window
+    stamp = lambda mins: (now - timedelta(minutes=mins)).isoformat()  # noqa: E731
+    assert b.refusal([stamp(m) for m in range(1, 12)], now) is None                    # 11 in the hour
+    assert "hourly cap 12" in b.refusal([stamp(m) for m in range(1, 13)], now)         # 12th used
+    assert b.refusal([stamp(60 + m) for m in range(12)], now) is None                  # all older than 1 h
+    day = [stamp(60 + 5 * m) for m in range(249)]
+    assert b.refusal(day, now) is None                                                 # 249 in 24 h
+    assert "daily cap 250" in b.refusal([*day, stamp(60 + 5 * 249)], now)              # 250 used
+    assert b.refusal([*day[:-1], stamp(24 * 60 + 1)], now) is None                     # one aged out
+
+
+def test_quiet_window_still_blocks_weekday_mornings():
+    from datetime import UTC, datetime
+
+    b = Budget()
+    wed_8am_et = datetime(2026, 11, 4, 13, 0, tzinfo=UTC)
+    assert "quiet window" in b.refusal([], wed_8am_et)
