@@ -208,12 +208,17 @@ def cmd_report(args, cfg) -> int:
         except Exception as exc:
             result["vs_sector_fund"] = {"error": str(exc)}
     if hasattr(broker, "bars"):
-        from .report import rating_decisions, score_ratings
+        from .report import early_read, rating_decisions, score_ratings
 
+        decisions = rating_decisions(journal.events())
         try:  # every rating, traded or not: more data than closed trades alone
-            result["ratings"] = score_ratings(rating_decisions(journal.events()), broker.bars, cfg.hold_days)
+            result["ratings"] = score_ratings(decisions, broker.bars, cfg.hold_days)
         except Exception as exc:
             result["ratings"] = {"error": str(exc)}
+        try:
+            result["early_read"] = early_read(decisions, broker.bars, cfg.hold_days)
+        except Exception as exc:
+            result["early_read"] = {"error": str(exc)}
     from .decision_v2 import compare
 
     result["decision_v2_shadow"] = compare(journal.events())

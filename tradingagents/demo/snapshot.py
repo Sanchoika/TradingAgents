@@ -265,9 +265,9 @@ def build_snapshot(cfg, *, prices: bool = True, schedule: bool = True, bars=None
                    "unrealized_last_run": unrealized_at_run}
 
     # -- optional read-only extras (network, build time only) -----------------
-    extras = {"prices": None, "ratings_score": None, "vs_sector_fund": None, "score": None}
+    extras = {"prices": None, "ratings_score": None, "early_read": None, "vs_sector_fund": None, "score": None}
     if account is not None:
-        from .report import rating_decisions, score_ratings, summarize
+        from .report import early_read, rating_decisions, score_ratings, summarize
 
         closed = account["closed"]
         spread_half = {str(t["id"]): float(t.get("spread_cost", 0)) / 2 for t in closed}
@@ -295,6 +295,11 @@ def build_snapshot(cfg, *, prices: bool = True, schedule: bool = True, bars=None
                                                         int(getattr(cfg, "hold_days", 5)), today=today)
             except Exception as exc:
                 extras["ratings_score"] = {"error": type(exc).__name__}
+            try:
+                extras["early_read"] = early_read(rating_decisions(events), bars,
+                                                  int(getattr(cfg, "hold_days", 5)), today=today)
+            except Exception as exc:
+                extras["early_read"] = {"error": type(exc).__name__}
             if closed:
                 from .sectors import excess_vs_sector
 

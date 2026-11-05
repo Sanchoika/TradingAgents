@@ -134,3 +134,93 @@ def score_ratings(decisions: list[dict], bars, hold_days: int = 5, today: str | 
         result["directional"] = {"n": len(signed), "hit_rate": round(sum(s > 0 for s in signed) / len(signed), 3),
                                  "mean_signed_move_pct": round(statistics.fmean(signed), 2)}
     return result
+
+
+CHECKPOINTS = (20, 50, 100, 150)
+STOP_T = -2.0      # clearly worse than no skill: stop early
+PROMISING_T = 2.5  # stricter than the stop, because luck fakes good results more often than bad
+_WEIGHT = {"Buy": 2, "Overweight": 1, "Underweight": 1, "Sell": 2}
+
+
+def _day_t(groups: list[list[float]]) -> tuple[float, float | None]:
+    day_means = [statistics.fmean(g) for g in groups]
+    mean = statistics.fmean(day_means)
+    if len(day_means) < 3:
+        return mean, None
+    sd = statistics.stdev(day_means)
+    return mean, (mean / (sd / len(day_means) ** 0.5) if sd else None)
+
+
+def early_read(decisions: list[dict], bars, hold_days: int = 5, today: str | None = None,
+               benchmark: str = "SPY") -> dict:
+    """Early read from every directional rating: sign x (stock - SPY) over the hold window, by day.
+    Measurement only; the final verdict still waits for 150 closed trades."""
+    from datetime import date
+
+    import pandas as pd
+
+    today = today or date.today().isoformat()
+
+    def opens(symbol):
+        df = bars(symbol, today).dropna(subset=["Open"]).reset_index(drop=True)
+        return pd.to_datetime(df["Date"]).dt.date.astype(str).tolist(), df["Open"].astype(float).tolist()
+
+    spy_dates, spy_open = opens(benchmark)
+    spy = dict(zip(spy_dates, spy_open, strict=False))
+    rows, pending, errors = [], 0, 0
+    for d in decisions:
+        sign = _SIGN.get(d["rating"], 0)
+        if not sign:
+            continue
+        try:
+            dates, op = opens(d["ticker"])
+            later = [i for i, x in enumerate(dates) if x > d["trade_date"]]
+            if len(later) <= hold_days:
+                pending += 1
+                continue
+            i = later[0]
+            a, b = dates[i], dates[i + hold_days]
+            if a not in spy or b not in spy:
+                errors += 1
+                continue
+            move = 100.0 * (op[i + hold_days] / op[i] - 1)
+            mkt = 100.0 * (spy[b] / spy[a] - 1)
+            rows.append({"day": d["trade_date"], "rating": d["rating"], "sign": sign,
+                         "move": move, "excess": sign * (move - mkt)})
+        except Exception:
+            errors += 1
+    out = {"scored": len(rows), "pending": pending, "benchmark": benchmark,
+           "note": "early read from ratings, market move removed; not the 150-trade verdict"}
+    if errors:
+        out["price_errors"] = errors
+    if not rows:
+        out["call"] = "too early"
+        return out
+    by_day: dict[str, list[dict]] = {}
+    for r in rows:
+        by_day.setdefault(r["day"], []).append(r)
+    mean, t = _day_t([[r["excess"] for r in g] for g in by_day.values()])
+    out.update({"days": len(by_day), "mean_excess_pct": round(mean, 2),
+                "hit_rate": round(sum(r["excess"] > 0 for r in rows) / len(rows), 3),
+                "t_by_day": round(t, 2) if t is not None else None})
+    pairs = [statistics.fmean([r["move"] for r in g if r["sign"] > 0])
+             - statistics.fmean([r["move"] for r in g if r["sign"] < 0])
+             for g in by_day.values() if {r["sign"] for r in g} == {1, -1}]
+    if pairs:
+        out["long_minus_short_same_day"] = {"days": len(pairs), "mean_pct": round(statistics.fmean(pairs), 2)}
+    strong = [r["excess"] for r in rows if _WEIGHT[r["rating"]] == 2]
+    mild = [r["excess"] for r in rows if _WEIGHT[r["rating"]] == 1]
+    if strong and mild:
+        out["conviction"] = {"strong_n": len(strong), "strong_mean_pct": round(statistics.fmean(strong), 2),
+                             "mild_n": len(mild), "mild_mean_pct": round(statistics.fmean(mild), 2)}
+    reached = [c for c in CHECKPOINTS if len(rows) >= c]
+    out["checkpoint"] = reached[-1] if reached else None
+    if not reached or t is None:
+        out["call"] = "too early"
+    elif t <= STOP_T:
+        out["call"] = "stop: clearly worse than no skill"
+    elif t >= PROMISING_T:
+        out["call"] = "promising (keep running; verdict at 150 closed trades)"
+    else:
+        out["call"] = "no clear signal yet"
+    return out
