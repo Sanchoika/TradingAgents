@@ -10,6 +10,8 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=/root/ta-brent
 Environment=PYTHONPATH=/root/ta-brent
+# notify_command runs `hermes`, installed in /root/.local/bin, which systemd does not put on PATH
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOME=/root
 ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/brent.toml news-check --analyze
 Restart=on-failure

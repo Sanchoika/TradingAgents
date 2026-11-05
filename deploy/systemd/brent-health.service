@@ -5,6 +5,8 @@ Description=Brent health check + external heartbeat ping
 Type=oneshot
 WorkingDirectory=/root/ta-brent
 Environment=PYTHONPATH=/root/ta-brent
+# notify_command runs `hermes`, installed in /root/.local/bin, which systemd does not put on PATH
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOME=/root
 # /etc/tradingagents/heartbeat-url holds the external heartbeat URL (mode 600). Optional.
 ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/brent.toml health --ping-file /etc/tradingagents/heartbeat-url
