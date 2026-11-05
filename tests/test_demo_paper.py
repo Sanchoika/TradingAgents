@@ -418,3 +418,132 @@ def test_score_ratings_counts_every_rating_and_skips_dry_runs():
     assert out["by_rating"]["Hold"]["n"] == 1
     assert out["pending"] == 1  # DDD's window has not finished
     assert out["directional"]["hit_rate"] == 1.0
+
+
+# ---- stage B correctness fixes -------------------------------------------------
+
+def test_exit_queued_trade_stays_exposed_and_stop_protected(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    tid = b.market_order("AAA", 10, "96.0", "Buy")["tradeOpened"]["tradeID"]
+    p.add(100, 101, 99, 100)
+    b.sync()                                          # filled
+    b.close_trade(tid)                                # exit queued for the next open
+    assert b.our_open_trades() == [] and len(b.exposure_trades()) == 1
+    p.add(99, 99.5, 90.0, 95)                         # next bar crashes through the stop after an open above it
+    ev = b.sync()
+    # the exit fills at that bar's open, which is before the crash: a rating exit, not a stop
+    assert ev[0]["reason"] == "rating" and b.exposure_trades() == []
+
+
+def test_stop_hit_before_the_exit_bar_wins(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    tid = b.market_order("AAA", 10, "96.0", "Buy")["tradeOpened"]["tradeID"]
+    p.add(100, 101, 99, 100)
+    b.sync()
+    p.add(99, 99.5, 90.0, 95)                         # stop hit; sync not run yet
+    b.close_trade(tid)                                # exit queued for a day after the stop
+    p.add(94, 95, 93, 94)
+    ev = b.sync()
+    assert len(ev) == 1 and ev[0]["reason"] == "stop"
+
+
+def test_caps_count_exit_queued_positions(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(mode="earnings", universe=["AAA", "BBB"], max_open_positions=1, journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+    tid = b.market_order("AAA", 10, "96.0", "Buy")["tradeOpened"]["tradeID"]
+    p.add(100, 101, 99, 100)
+    b.sync()
+    b.close_trade(tid)
+    from tradingagents.demo.runner import _open
+    row = _open(b, cfg, j, "BBB", "Buy", 1, 100_000, False)
+    assert row["event"] == "skip" and "already open" in row["reason"]
+
+
+def test_report_does_not_settle_the_account(tmp_path, monkeypatch):
+    from tradingagents.demo import __main__ as m
+
+    called = []
+    monkeypatch.setattr(PaperBroker, "sync", lambda self: called.append(1) or [])
+    cfg = DemoConfig(journal_dir=str(tmp_path))
+    monkeypatch.setattr(m, "_broker", lambda c: PaperBroker(tmp_path / "a.json", bars=Prices(), today=lambda: date(2026, 10, 1)))
+    m.cmd_report(None, cfg)
+    assert called == []
+
+
+def test_sector_comparison_fetches_the_latest_needed_history():
+    from tradingagents.demo.sectors import excess_vs_sector
+
+    seen = []
+
+    def bars(sym, as_of):
+        seen.append(as_of)
+        n = 5 if as_of < "2026-10-20" else 30
+        return pd.DataFrame({"Date": pd.bdate_range("2026-10-01", periods=n), "Open": [100.0 + i for i in range(n)]})
+
+    closed = [{"instrument": "AAPL", "units": 1, "price": 100, "close_price": 101,
+               "opened": "2026-10-02", "closed": "2026-10-05"},
+              {"instrument": "MSFT", "units": 1, "price": 100, "close_price": 101,
+               "opened": "2026-10-12", "closed": "2026-10-23"}]
+    out = excess_vs_sector(closed, bars)
+    assert out["trades"] == 2 and out["skipped"] == 0 and seen == ["2026-10-23"]
+
+
+def test_crash_after_run_start_is_not_a_completed_run(tmp_path):
+    from tradingagents.demo.notes import missing_run
+
+    now = datetime(2026, 11, 3, 14, tzinfo=UTC)
+    started = [{"event": "run_start", "trade_date": "2026-11-02", "dry_run": False},
+               {"event": "run_end", "trade_date": "2026-10-30", "dry_run": False}]
+    assert missing_run(started, now) == "2026-11-03"
+    done = started + [{"event": "run_end", "trade_date": "2026-11-03", "dry_run": False}]
+    assert missing_run(done, now) is None
+
+
+def test_run_once_writes_run_end_and_a_failed_lookup_is_retried(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(mode="earnings", universe=["AAA"], journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+    now = datetime(2026, 11, 3, 13, tzinfo=UTC)
+    calls = {"n": 0}
+
+    def flaky(t):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("rate limited")
+        return [pd.Timestamp("2026-11-02T21:00:00Z")]
+
+    rows = run_once(b, fixed_analyzer("Buy"), cfg, j, "2026-11-03", earnings=flaky, now=now,
+                    edgar=lambda t: [])
+    assert rows[-1]["event"] == "run_end"
+    assert "AAA" in j.state()["lookup_retry"]
+    # next day the watermark has moved past the report, but the failed symbol keeps its old window
+    rows = run_once(b, fixed_analyzer("Buy"), cfg, j, "2026-11-04", earnings=flaky,
+                    now=datetime(2026, 11, 4, 13, tzinfo=UTC), edgar=lambda t: [])
+    scan = next(r for r in rows if r["event"] == "earnings_scan")
+    assert scan["reported"] == ["AAA"]
+
+
+def test_run_lock_is_single_writer(tmp_path):
+    from tradingagents.demo.lock import RunLock, RunLocked
+
+    with RunLock(tmp_path / "run.lock"), pytest.raises(RunLocked):
+        RunLock(tmp_path / "run.lock").__enter__()
+    with RunLock(tmp_path / "run.lock"):   # released
+        pass
+    (tmp_path / "run.lock").write_text("999999999")   # dead owner is taken over
+    with RunLock(tmp_path / "run.lock"):
+        pass
+
+
+def test_summary_reports_day_clustered_ci():
+    from tradingagents.demo.report import summarize
+
+    trades = [{"id": str(i), "units": 1, "realizedPL": 10.0 * (i % 3 - 1), "financing": 0,
+               "opened": f"2026-11-0{1 + i % 4}"} for i in range(12)]
+    r = summarize(trades, {}, n_random=200)
+    assert r["entry_days"] == 4 and len(r["mean_pnl_ci95_by_day"]) == 2 and "note" in r
