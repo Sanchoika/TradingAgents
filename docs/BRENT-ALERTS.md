@@ -287,8 +287,13 @@ time. It then recovers any windows and paper trades left from before a restart.
 - The token must be typed again after a server restart (by design: unattended start would
   mean storing the token, which is your decision).
 - The rules are untested hypotheses. Months of forward data are needed before any judgment.
-- News coverage currently depends on one aggregator (Google News searches); Yahoo returns
-  nothing for BZ=F/CL=F. If Google fails, coverage is missing and alerts wait (WATCH).
+- News coverage currently depends on one aggregator (Google News searches); Yahoo returned
+  nothing for BZ=F/CL=F and is off by default. opec.org blocks automated access (Cloudflare 403,
+  checked 2026-11-05), so OPEC news also comes through Google. If Google fails, coverage is
+  missing and alerts wait (WATCH).
+- EIA answers 403 on the WPSR files before the release (Wed, and Thu for holiday weeks,
+  08:00-12:30 ET). Those are logged as `eia_not_released`, not as fetch errors, and do not
+  start a backoff.
 - The model sees headlines and RSS snippets only, never publisher article text. Article
   "content checks" only test whether a link opens (Google links land on a redirect page).
 - EIA files are logged by version but not interpreted (no reliable consensus expectations).
@@ -314,7 +319,7 @@ python -m tradingagents.brent --config brent.toml news-report
 | Feed | Source | Key needed |
 |---|---|---|
 | Google News RSS | Queries `Brent crude`, `OPEC+ oil output`, `oil supply disruption`, `site:opec.org` | none |
-| Yahoo Finance | `BZ=F`, `CL=F` | none |
+| Yahoo Finance (off by default since 2026-11-05: no news for these tickers in 1,073 server polls) | `BZ=F`, `CL=F` | none |
 | EIA WPSR release files | `ir.eia.gov/wpsr/summary.txt`, `table1.csv` | none |
 
 The EIA API v2 needs a free key, but these release files do not. Every feed is treated as
@@ -353,7 +358,7 @@ Everything goes to `news.jsonl`:
   That is inside the 8h holding period. Older supportive news never authorises a new trade.
 - **fresh, for conflict:** within 24h. Opposing material news blocks for longer.
 - **fresh check (coverage by source function):** at least 2 **general news** feeds (Google
-  News searches, Yahoo) polled successfully in the last 10 min, and every recent item has
+  News searches) polled successfully in the last 10 min, and every recent item has
   been analysed. EIA files are official data: they are logged by content version (a new
   release or revision at the same URL is a new item) but never count as a news check and
   are not interpreted.

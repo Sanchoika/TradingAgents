@@ -409,3 +409,39 @@ def test_rotate_archives_old_events_and_keeps_recent(tmp_path):
         assert '"n": 1' in fh.read()
     assert c.rotate()["moved"] == 0                             # idempotent
     assert c.maybe_rotate() is not None and c.maybe_rotate() is None   # once a day
+
+
+class HTTP403(Exception):
+    def __init__(self):
+        super().__init__("403 Client Error: Forbidden")
+        self.response = Resp(status=403)
+
+
+def test_eia_403_before_release_is_waiting_not_failure(tmp_path):
+    col, clock = make(tmp_path)
+
+    def get(url):
+        if "ir.eia.gov" in url:
+            raise HTTP403()
+        return Resp(rss(("Brent steady", "Wed, 04 Nov 2026 14:50:00 GMT")))
+
+    col.get = get
+    clock.t = datetime(2026, 11, 4, 15, 0, tzinfo=UTC)   # Wed 10:00 ET, before the release
+    col.poll()
+    ev = events(col)
+    assert sum(e["event"] == "eia_not_released" for e in ev) == 2
+    assert not any(e["event"] == "fetch_error" and e["feed"].startswith("eia:") for e in ev)
+    assert col.st["feeds"]["eia:summary"].get("streak", 0) == 0
+    clock.t = datetime(2026, 11, 5, 15, 0, tzinfo=UTC)   # Thu is in the window too (holiday-week releases)
+    col.poll()
+    clock.t = datetime(2026, 11, 6, 15, 0, tzinfo=UTC)   # Fri: a 403 is a real failure
+    col.poll()
+    assert col.st["feeds"]["eia:summary"]["streak"] == 1
+    assert sum(e["event"] == "fetch_error" and e["feed"] == "eia:summary" for e in events(col)) == 1
+
+
+def test_yahoo_feed_is_off_by_default(tmp_path):
+    feeds = [f for f, _ in NewsCollector(tmp_path, get=lambda u: None).sources()]
+    assert "yahoo" not in feeds and "google:brent" in feeds
+    on = [f for f, _ in NewsCollector(tmp_path, get=lambda u: None, yahoo=news.fetch_yahoo).sources()]
+    assert "yahoo" in on
