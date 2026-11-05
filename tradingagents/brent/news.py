@@ -580,11 +580,15 @@ def budget_usage(folder: str | Path, now: datetime, per_hour: int, per_day: int,
             kind = "hourly cap" if kind.startswith("hourly") else (
                 "daily cap" if kind.startswith("daily") else "quiet window")
             refused[kind] = refused.get(kind, 0) + 1
+    shadow = [e["quiet_shadow"] for t, e in an if e.get("quiet_shadow") and now - t < timedelta(days=1)]
     lat = sorted(e["latency_s"] for t, e in an if e.get("called") and e.get("latency_s") is not None
                  and now - t < timedelta(days=1))
     return {"hour": sum(now - t < timedelta(hours=1) for t in called), "per_hour": per_hour,
             "day": sum(now - t < timedelta(days=1) for t in called), "per_day": per_day,
             "quiet_window_et": f"{quiet[0]}-{quiet[1]} weekdays", "refusals_24h": refused,
+            "quiet_shadow_24h": {"rule": QUIET_SHADOW_RULE,
+                                 "would_call": sum(1 for x in shadow if x.get("would_call")),
+                                 "urgent_items": sum(len(x.get("keys", [])) for x in shadow)},
             "tokens_24h": tokens, "latency_median_s": lat[len(lat) // 2] if lat else None,
             "note": "calls, not money; tokens are reported usage, not a bill or remaining quota"}
 
@@ -679,6 +683,24 @@ def should_wait(pending: list[dict], now: datetime, wait_s: float = BATCH_WAIT_S
     return (now - datetime.fromisoformat(pending[0]["first_seen"])).total_seconds() < wait_s
 
 
+QUIET_SHADOW_PER_HOUR = 2
+QUIET_SHADOW_RULE = f"urgent items only, at most {QUIET_SHADOW_PER_HOUR} calls per hour"
+
+
+def quiet_shadow(events: list[dict], pending: list[dict], now: datetime) -> dict:
+    """Shadow of a reserved-capacity rule for the quiet window: logged only, the window still refuses."""
+    served, recent = set(), 0
+    for e in events:
+        sh = e.get("quiet_shadow") or {}
+        if e["event"] == "analysis" and sh.get("would_call"):
+            served.update(sh.get("keys", []))
+            recent += now - datetime.fromisoformat(e["ts"]) < timedelta(hours=1)
+    new = [i["key"] for i in pending if is_urgent(i) and i["key"] not in served]
+    would = bool(new) and recent < QUIET_SHADOW_PER_HOUR
+    return {"rule": QUIET_SHADOW_RULE, "would_call": would, "keys": new if would else [],
+            "urgent_waiting": len(new)}
+
+
 def count_calls(events: list[dict]) -> list[str]:
     """Timestamps of model calls: every started call, plus older records without a start marker.
     Writing the start before the call means a crash mid-call still spends budget."""
@@ -714,6 +736,8 @@ def analyze(collector: NewsCollector, model: Callable, budget: Budget,
                                **base)
     refusal = budget.refusal(calls, now, urgent=any(is_urgent(i) for i in pending))
     if refusal:
+        if refusal.startswith("quiet window"):
+            base["quiet_shadow"] = quiet_shadow(events, pending, now)
         return collector.write("analysis", called=False, refused=refusal,
                                state={"state": "unavailable", "why": f"budget: {refusal}"}, **base)
     call_id = hashlib.sha256(f"{now.isoformat()}{len(calls)}".encode()).hexdigest()[:10]
