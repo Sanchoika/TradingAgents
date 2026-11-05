@@ -598,3 +598,16 @@ def test_v2_is_journalled_without_changing_orders(tmp_path):
     assert any(r["event"] == "open" for r in rows)                  # the frozen test still trades
     from tradingagents.demo.decision_v2 import compare
     assert compare(j.events())["v2_abstained_where_v1_traded"] == 1
+
+
+def test_decision_v2_crash_does_not_skip_order(tmp_path, monkeypatch):
+    from tradingagents.demo import decision_v2
+    monkeypatch.setattr(decision_v2, "interpret", lambda *a, **k: 1 / 0)
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(mode="earnings", universe=["AAA"], journal_dir=str(tmp_path))
+    rows = run_once(b, lambda t, d: ("Buy", "Strong beat; long for the week."), cfg, Journal(tmp_path),
+                    "2026-11-03", earnings=lambda t: [pd.Timestamp("2026-11-02T21:00:00Z")],
+                    now=datetime(2026, 11, 3, 13, tzinfo=UTC), edgar=lambda t: [])
+    assert any(r["event"] == "decision_v2_error" for r in rows)
+    assert any(r["event"] == "open" for r in rows)
