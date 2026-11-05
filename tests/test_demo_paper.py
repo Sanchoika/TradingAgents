@@ -624,4 +624,4 @@ def test_hold_is_exactly_five_sessions_and_counts_holidays():
     assert sessions.planned_exit_run("2026-11-23", 5) == "2026-11-30"
     assert not sessions.exit_due("2026-11-23", "2026-11-27", 5)
     assert sessions.exit_due("2026-11-23", "2026-11-30", 5)
-    assert sessions.covered("2026-11-03") and not sessions.covered("2029-01-02")
+    assert sessions.covered("2026-11-03") and not sessions.covered("2032-01-02")
