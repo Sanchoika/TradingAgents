@@ -366,6 +366,18 @@ def cmd_news_report(args, cfg) -> int:
     return 0
 
 
+def cmd_news_events(args, cfg) -> int:
+    from pathlib import Path
+
+    from .events import build_events
+
+    path = Path(cfg.journal_dir) / "news.jsonl"
+    rows = [json.loads(x) for x in path.read_text().splitlines() if x.strip()] if path.exists() else []
+    evs = build_events(rows)
+    print(json.dumps(evs[-args.last:], indent=2, default=str))
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python -m tradingagents.brent", description=__doc__)
     p.add_argument("--config", help="TOML settings file (see brent.example.toml)")
@@ -397,6 +409,8 @@ def main(argv=None) -> int:
                    help="stop after this many minutes (bounded test run); 0 = run until stopped")
     n.add_argument("--analyze", action="store_true", help="classify pending items (bounded model)")
     sub.add_parser("news-report", help="feed delays, gaps, duplicates, content access, model use")
+    ne = sub.add_parser("news-events", help="shadow event ledger: linked articles per event (read-only)")
+    ne.add_argument("--last", type=int, default=10)
     args = p.parse_args(argv)
     from .client import OandaReadError
 
@@ -405,7 +419,8 @@ def main(argv=None) -> int:
         return {"check": cmd_check, "feasibility": cmd_feasibility, "run": cmd_run,
                 "status": cmd_status, "health": cmd_health, "stop": cmd_stop, "report": cmd_report,
                 "dashboard": cmd_dashboard, "manual": cmd_manual,
-                "news-check": cmd_news_check, "news-report": cmd_news_report}[args.cmd](args, cfg)
+                "news-check": cmd_news_check, "news-report": cmd_news_report,
+                "news-events": cmd_news_events}[args.cmd](args, cfg)
     except (OandaReadError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
