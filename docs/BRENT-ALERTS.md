@@ -454,3 +454,16 @@ The independent audit of e10d2f3 (2026-11-02) found ten issues. Each was reprodu
 | 9 | Experiment identity incomplete | Confirmed, fixed (manifest) |
 | 10 | Directional marks pooled across arms | Confirmed, fixed (grouped; shadow never "delivered") |
 | - | Windows sender test asserted Linux behaviour | Confirmed, test corrected |
+
+## Notification types (exp-3)
+
+| Type | Label | Meaning |
+|---|---|---|
+| WATCH | `[BRENT WATCH] BW-… NOT AN ENTRY` | A defined setup is developing. Shows the level, possible zone, current blocker, news and chart. Sent once per material state (price not in zone / news-policy blocker / other checks), never on every poll. Creates no signal and no paper fill. Only for new setups inside the operating range. |
+| ENTRY | `[BRENT PAPER/ADVISORY] BR-… ENTRY` | All current checks passed on a fresh quote. Unchanged 60-second validity from the quote time. Says `follows WATCH BW-…` when a WATCH came first. |
+| UPDATE / CANCEL | `… SKIP` / `… EXPIRED` / `[BRENT WATCH] BW-… CANCELLED` | A material change or invalidation, linked to the same ID with the reason. A WATCH whose setup became an ENTRY is linked, not cancelled. |
+
+`watch_alerts = false` turns WATCH messages off. WATCH sends are rate-limited per setup
+(`watch_min_gap_seconds`, default 300). Outcome tracking stays separate: only ENTRY alerts and
+chart-only shadow signals are paper-tracked; WATCH events are journalled as `watch_notice` /
+`watch_end`.

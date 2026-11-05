@@ -60,6 +60,51 @@ def group_of(sg: dict, accepted: set | None = None) -> str:
     return f"combined {base} | {sent}"
 
 
+def progression(events: list[dict]) -> dict:
+    """Setups detected -> entry zone reached -> evidence ready -> checks passed -> notified.
+
+    Counts are unique setups (keys), not polls. A setup's primary blocker is the last reason it
+    was held back; all reasons are listed. Research-only chart-only signals are not counted as
+    notifications, and WATCH messages are reported apart.
+    """
+    detected = {e["key"] for e in events if e["event"] == "watch" and e.get("key")}
+    suppressed: dict[str, list[str]] = {}
+    for e in events:
+        if e["event"] == "suppressed" and e.get("key"):
+            suppressed.setdefault(e["key"], []).extend(e["reasons"])
+    cand = {e["key"]: e for e in events if e["event"] == "candidate" and e.get("key")}
+    zone = (set(suppressed) | set(cand)) & detected
+    evidence = set(cand) & detected
+    combined = {e["setup"]["key"]: e for e in events if e["event"] == "signal"
+                and e.get("arm", "combined") == "combined" and (e.get("setup") or {}).get("key")}
+    passed = set(combined) & detected
+    ok_ids = {e["id"] for e in events if e["event"] == "sent" and e["kind"] == "alert" and e["ok"]}
+    notified = {k for k, sg in combined.items() if sg["id"] in ok_ids and k in detected}
+    blockers: Counter = Counter()
+    for k in detected - notified:
+        if k in cand and cand[k]["action"] != cand[k]["direction"]:
+            blockers[f"news/chart policy: {cand[k]['row']}"] += 1
+        elif k in suppressed:
+            blockers[re.sub(r"[-+]?\d[\d.]*", "#", suppressed[k][-1]).split(" (")[0]] += 1
+        elif k not in zone:
+            blockers["entry zone never reached (no setup lost)"] += 1
+        else:
+            blockers["other"] += 1
+    watches = {e["id"] for e in events if e["event"] == "watch_notice"}
+    return {"setups_detected": len(detected), "entry_zone_reached": len(zone),
+            "evidence_ready": len(evidence), "entry_checks_passed": len(passed),
+            "notification_accepted": len(notified),
+            "primary_blocker_of_setups_not_notified": dict(blockers.most_common()),
+            "watch_messages_unique_watches": len(watches),
+            "watch_messages_sent": sum(1 for e in events if e["event"] == "watch_notice"),
+            "watch_cancelled": sum(1 for e in events if e["event"] == "watch_end"
+                                   and e.get("outcome") in ("invalidated", "expired")),
+            "watch_to_entry": sum(1 for e in events if e["event"] == "watch_end"
+                                  and e.get("outcome") == "entry"),
+            "denominators": "unique setups; 'notification_accepted' = notify command accepted the "
+                            "ENTRY; phone display is not measured; chart-only shadow signals excluded"}
+
+
 def summarize(events: list[dict]) -> dict:
     sent = [e for e in events if e["event"] == "sent"]
     alerts = [e for e in sent if e["kind"] == "alert"]
@@ -137,7 +182,7 @@ def summarize(events: list[dict]) -> dict:
     chart_only = paper_stats(shadow)
     chart_only["differences_from_combined"] = ARM_DIFFERENCES
     manual = [e for e in events if e["event"] == "manual"]
-    return {"operational": op, "directional_by_group": direction, "paper_hypothetical": paper,
+    return {"progression": progression(events), "operational": op, "directional_by_group": direction, "paper_hypothetical": paper,
             "chart_only_comparison": chart_only,
             "manual_confirmed": {"records": len(manual),
                                  "entered": sum(1 for e in manual if e.get("entered")),
@@ -150,7 +195,7 @@ def summarize(events: list[dict]) -> dict:
                      "apart by experiment, arm, label, sent/not sent and paper-rules version.")}
 
 
-def news_health(journal_dir: str | Path, now: datetime | None = None) -> dict:
+def news_health(journal_dir: str | Path, now: datetime | None = None, cfg=None) -> dict:
     """The news collector as a separate process: lock held, and what its log says now."""
     from .news import news_view
     from .store import Store
@@ -161,7 +206,16 @@ def news_health(journal_dir: str | Path, now: datetime | None = None) -> dict:
         v = news_view(journal_dir, now)
     except Exception as exc:  # a broken log must show as a problem, not crash status
         v = {"state": "unavailable", "status": "error", "why": str(exc)[:200]}
-    return {"running": running, "status": v.get("status"), "state": v.get("state"),
+    budget = None
+    if cfg is not None:
+        from .news import budget_usage
+
+        try:
+            budget = budget_usage(journal_dir, now, cfg.llm_per_hour, cfg.llm_per_day,
+                                  tuple(cfg.llm_quiet_et))
+        except Exception as exc:
+            budget = {"error": str(exc)[:200]}
+    return {"budget": budget, "running": running, "status": v.get("status"), "state": v.get("state"),
             "why": v.get("why", ""), "last_poll_attempt": v.get("last_poll_attempt"),
             "general_news_fresh": (v.get("health") or {}).get("general_news_fresh"),
             "basis": v.get("basis")}
@@ -198,6 +252,18 @@ def status_lines(state: dict, locked: bool, now: datetime | None = None,
                    f"{news['status']} ({news['state']}); general news feeds fresh "
                    f"{news['general_news_fresh']}; last poll {news['last_poll_attempt']}; "
                    f"analysis basis {news['basis']}" + (f"; {news['why']}" if news["why"] else ""))
+    eff = state.get("effective")
+    if eff:
+        out.append(f"version: {eff['experiment']} code {eff['code_commit']}; operating range "
+                   f"{eff['range'][0]:g}-{eff['range'][1]:g} ({eff['range_convention']}); entry validity "
+                   f"{eff['validity_seconds']}s; entry alerts {'ON' if eff['alerts_enabled'] else 'OFF'}, "
+                   f"WATCH {'ON' if eff['watch_alerts'] else 'OFF'}; phone display: {eff['phone_display']}")
+    b = (news or {}).get("budget")
+    if b and "error" not in b:
+        out.append(f"model budget (shared, rolling): {b['hour']}/{b['per_hour']} last hour, "
+                   f"{b['day']}/{b['per_day']} last 24h; quiet window {b['quiet_window_et']}; "
+                   f"refusals 24h {b['refusals_24h'] or 'none'}; tokens 24h {b['tokens_24h']}; "
+                   f"median latency {b['latency_median_s']}s. {b['note']}")
     if state.get("last_tick"):
         age = (now - datetime.fromisoformat(state["last_tick"])).total_seconds()
         out.append(f"last tick: {state['last_tick']} ({age:.0f}s ago)")

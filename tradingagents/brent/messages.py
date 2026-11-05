@@ -24,7 +24,8 @@ def alert_text(sig: dict, extra: dict) -> str:
     expiry = datetime.fromisoformat(sig["expires_at"])
     qt = datetime.fromisoformat(q["time"])
     lines = [
-        f"[BRENT PAPER/ADVISORY] {sig['id']} | NO ORDER PLACED | {sig.get('label', '')}",
+        f"[BRENT PAPER/ADVISORY] {sig['id']} | ENTRY | NO ORDER PLACED | {sig.get('label', '')}"
+        + (f" | follows WATCH {sig['from_watch']}" if sig.get("from_watch") else ""),
         f"{s['direction']} {sig['instrument']}: {side} only if {px_name} is "
         f"{s['zone_lo']:.2f}-{s['zone_hi']:.2f}",
         f"Valid until {stamp(expiry)}, ONLY while the executable {px_name} stays within "
@@ -103,3 +104,32 @@ def switch_text(enabled: bool, m: dict) -> str:
                 "updates. Untested strategy; paper tracking only.")
     return ("[BRENT STATUS] Brent entry alerts are OFF (shadow mode): decisions and paper "
             "tracking continue, nothing actionable is sent.")
+
+
+def watch_text(watch_id: str, s: dict, mid: float, blocker: str, news_line: str, chart_line: str,
+               first: bool, report_url: str = "") -> str:
+    """WATCH: a defined setup is forming or its state changed. Never an entry instruction."""
+    long_ = s["direction"] == LONG
+    px_name = "ask" if long_ else "bid"
+    head = "WATCH" if first else "WATCH UPDATE"
+    return "\n".join([
+        f"[BRENT WATCH] {watch_id} | {head} | NOT AN ENTRY | no order is placed",
+        f"{s['kind']} {s['direction']} BCO_USD around {s['level_name']} {s['level']:.2f}: a setup is "
+        f"developing. Possible future entry zone {s['zone_lo']:.2f}-{s['zone_hi']:.2f} ({px_name}); "
+        f"mid now {mid:.2f}.",
+        f"Current blocker: {blocker}",
+        f"Next confirmation: the {px_name} inside the zone with every entry check passing; only then "
+        "would a separate ENTRY message follow. This message is not a signal to trade.",
+        f"News (headlines/snippets only): {news_line}",
+        f"Chart: {chart_line}",
+        f"Setup {s['key']}. Dropped if a 15-min close goes back through {s['invalid_close']:.2f} or "
+        f"it is not triggered by {stamp(datetime.fromisoformat(s['expires_at']))}."
+        + (f" Chart: {report_url}" if report_url else ""),
+    ])
+
+
+def watch_end_text(watch_id: str, when: datetime, reason: str, entry_id: str = "") -> str:
+    if entry_id:
+        return ""
+    return (f"[BRENT WATCH] {watch_id} | CANCELLED at {stamp(when)}: {reason}. The setup is no "
+            "longer developing. Nothing to do; no order was placed and no position was changed.")

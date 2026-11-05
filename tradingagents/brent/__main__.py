@@ -168,7 +168,7 @@ def cmd_run(args, cfg) -> int:
 def _pages(cfg, store, state, locked, write_page):
     from .report import news_health
 
-    nh = news_health(cfg.journal_dir)
+    nh = news_health(cfg.journal_dir, cfg=cfg)
     paths = [write_page(state, store.events(), locked, Path(cfg.journal_dir) / "brent.html", news=nh)]
     if cfg.site_dir:
         paths.append(write_page(state, store.events(), locked, Path(cfg.site_dir) / "index.html",
@@ -180,7 +180,7 @@ def cmd_status(args, cfg) -> int:
     from .report import news_health, status_lines
 
     store = Store(cfg.journal_dir)
-    print("\n".join(status_lines(store.state(), store.is_locked(), news=news_health(cfg.journal_dir))))
+    print("\n".join(status_lines(store.state(), store.is_locked(), news=news_health(cfg.journal_dir, cfg=cfg))))
     return 0
 
 
