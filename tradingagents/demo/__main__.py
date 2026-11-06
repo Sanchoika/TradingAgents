@@ -225,7 +225,7 @@ def cmd_report(args, cfg) -> int:
         except Exception as exc:
             result["ratings"] = {"error": str(exc)}
         try:
-            result["early_read"] = early_read(decisions, broker.bars, cfg.hold_days)
+            result["early_read"] = early_read(decisions, broker.bars, cfg.hold_days, events=journal.events())
         except Exception as exc:
             result["early_read"] = {"error": str(exc)}
     from .decision_v2 import compare

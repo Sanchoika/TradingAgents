@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly backup of the Brent journals and configs, then a restore check in scratch
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ta-brent
+Environment=PYTHONPATH=/root/ta-brent
+ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.ops backup --dest /root/backups/brent --source brent=/root/.tradingagents/brent --source brent.toml=/root/ta-brent/brent.toml --source control.toml=/root/ta-brent/control.toml --source control-audit=/root/.tradingagents/control
+ExecStartPost=/root/TradingAgents/.venv/bin/python -m tradingagents.ops restore-check --dest /root/backups/brent

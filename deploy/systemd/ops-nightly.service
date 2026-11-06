@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly checks (disk, backup age, PC stock snapshot, file sizes); notices only on change
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ta-brent
+Environment=PYTHONPATH=/root/ta-brent
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/root
+SuccessExitStatus=1
+ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.ops nightly --backup-dir /root/backups/brent --snapshot /root/ta-dashboard/data.json --state /root/.tradingagents/ops/nightly-notices.json --brent-config /root/ta-brent/brent.toml --watch-file news.jsonl=/root/.tradingagents/brent/news.jsonl --watch-file signals.jsonl=/root/.tradingagents/brent/signals.jsonl
