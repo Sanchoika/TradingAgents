@@ -141,3 +141,17 @@ def test_failed_read_back_rolls_back(fs):
     res = deploy.deploy(plan(), run=fs, now=lambda: T, sleep=lambda s: None)
     assert not res["ok"] and fs.heads == {"/a": "1" * 40, "/b": "1" * 40}
     assert "rolled back" in res["log"][-1]
+
+
+def test_refusal_names_a_missing_pytest():
+    class NoPytest(FakeSys):
+        def __call__(self, cmd, check=True, **kw):
+            if "pytest" in (cmd if isinstance(cmd, str) else " ".join(cmd)):
+                r = SimpleNamespace(returncode=1, stdout="", stderr="/x/python: No module named pytest")
+                if check:
+                    raise deploy.DeployError("x")
+                return r
+            return super().__call__(cmd, check, **kw)
+
+    with pytest.raises(deploy.DeployError, match="pytest is not installed"):
+        deploy.deploy(plan(), run=NoPytest(), now=lambda: T)
