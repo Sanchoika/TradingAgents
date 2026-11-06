@@ -23,8 +23,9 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from . import news, rules
+from .messages import card
 
-INFO_VERSION = "brent-info-1"
+INFO_VERSION = "brent-info-2"   # 2: card layout (2026-11-06), same content and caps
 MID_HISTORY = timedelta(hours=6)
 HEADLINE_MAX_AGE = timedelta(hours=2)     # older news is not "fresh" any more
 BRIEF_LATE = timedelta(minutes=45)        # a brief this late is skipped, not sent stale
@@ -196,39 +197,48 @@ class InfoLane:
             self.emit("brief", "brief", text, now, {"slot": key})
 
     def brief_text(self, q, ctx, daily, items, news_folder, now, hm) -> str:
-        lines = [f"[BRENT INFO] {{ID}} | {hm} ET BRIEF | INFORMATION ONLY | no trade suggested"]
-        lines.append(f"Brent mid {q.mid:.2f} (spread {q.ask - q.bid:.3f}) at {rules.ny(now):%H:%M} ET."
-                     + self._range_note(q))
+        rows, details = [], [f"Brent mid {q.mid:.2f} (spread {q.ask - q.bid:.3f}) at {rules.ny(now):%H:%M} ET."]
         done = [b for b in (daily or []) if b.get("complete", True)]
         if len(done) >= 2 and ctx:
             prev = done[-1]
             chg = q.mid - prev["c"]
-            lines.append(f"Since the last daily close {prev['c']:.2f}: {chg:+.2f} ({chg / ctx['atr']:+.2f} daily ATR; "
-                         f"ATR {ctx['atr']:.2f}). Yesterday's range {ctx['pdl']:.2f} to {ctx['pdh']:.2f}.")
+            rows += [("Price", f"{q.mid:.2f} {'▲' if chg >= 0 else '▼'}{abs(chg):.2f}"),
+                     ("Yday", f"{ctx['pdl']:.2f}–{ctx['pdh']:.2f}")]
+            details.append(f"Since the last daily close {prev['c']:.2f}: {chg:+.2f} ({chg / ctx['atr']:+.2f} daily ATR; "
+                           f"ATR {ctx['atr']:.2f}). Yesterday's range {ctx['pdl']:.2f} to {ctx['pdh']:.2f}.")
             last20 = done[-20:]
             if len(last20) == 20:
                 hi, lo = max(b["h"] for b in last20), min(b["l"] for b in last20)
-                lines.append(f"20-day range {lo:.2f} to {hi:.2f}; now at {100 * (q.mid - lo) / (hi - lo):.0f}% of it."
-                             if hi > lo else "20-day range: flat")
+                if hi > lo:
+                    rows.append(("20-day", f"{100 * (q.mid - lo) / (hi - lo):.0f}% of {lo:.2f}–{hi:.2f}"))
+                    details.append(f"20-day range {lo:.2f} to {hi:.2f}; now at {100 * (q.mid - lo) / (hi - lo):.0f}% of it.")
+                else:
+                    details.append("20-day range: flat")
         else:
-            lines.append("Daily candles unavailable: change and levels not shown.")
+            rows.append(("Price", f"{q.mid:.2f}"))
+            details.append("Daily candles unavailable: change and levels not shown.")
         at, shifted = next_eia(now)
-        lines.append("Next EIA weekly report: " + (
+        rows.append(("EIA", _countdown(at, now) if not shifted else "holiday week, day not verified", False))
+        details.append("Next EIA weekly report: " + (
             f"{_countdown(at, now)} (Wed 10:30 ET normal schedule)" if not shifted else
             "this is a holiday week, so the release day is not verified (normally Wed 10:30 ET)"))
         nv = news.news_view(news_folder, now)
         mat = sorted((i for i in items if i["material"]), key=lambda i: i["first_seen"], reverse=True)[:3]
         if nv.get("state") == "unavailable":
-            lines.append(f"News check: unavailable ({nv.get('why', 'unknown')}).")
+            note = f"News check unavailable ({nv.get('why', 'unknown')})."
+        elif mat:
+            note = f"{mat[0]['title'][:140]} ({mat[0]['classification']['bias']})"
+            details.append(f"News check: {nv.get('state')} (material items, model reading of headlines).")
         else:
-            lines.append(f"News check: {nv.get('state')} (material items, model reading of headlines).")
+            note = "No material oil news in the last 24 hours."
+            details.append(f"News check: {nv.get('state')} (material items, model reading of headlines).")
         for i in mat:
             c = i["classification"]
-            lines.append(f"- {i['title'][:140]} ({i.get('publisher') or '?'}, {c['status']}, "
-                         f"{c['bias']}; {self._evidence_label(i)})")
-        if not mat and nv.get("state") != "unavailable":
-            lines.append("No material oil news in the last 24 hours.")
-        return "\n".join(lines)
+            details.append(f"- {i['title'][:140]} ({i.get('publisher') or '?'}, {c['status']}, "
+                           f"{c['bias']}; {self._evidence_label(i)})")
+        details.append(self._range_note(q).strip())
+        return card("☀️" if hm < "10:00" else "🕛", f"BRENT {hm} ET BRIEF", rows, note,
+                    "info only · no trade suggested · {ID}", details)
 
     # ---------------------------------------------------------------- headlines
     def headlines(self, q, items, now):
@@ -257,13 +267,18 @@ class InfoLane:
         c = i["classification"]
         seen = datetime.fromisoformat(i["first_seen"])
         pub = f"published {rules.ny(datetime.fromisoformat(i['published'])):%H:%M} ET, " if i.get("published") else ""
-        lines = ["[BRENT INFO] {ID} | NEWS | INFORMATION ONLY | no trade suggested",
-                 f"{i['title'][:200]} ({i.get('publisher') or 'unknown publisher'}; {c['status'].replace('_', ' ')})",
-                 f"{pub}first seen {rules.ny(seen):%H:%M} ET. Evidence: {self._evidence_label(i)}.",
-                 f"Model reading: {c['bias']}. {c['mechanism'] or 'No mechanism stated.'}"
-                 + (f" Against it: {c['contradiction']}" if c.get("contradiction") else ""),
-                 self._reaction(q, seen, now) + self._range_note(q)]
-        return "\n".join(lines)
+        base = self.mid_at(seen)
+        mins = int((now - seen).total_seconds() // 60)
+        rows = [("Source", f"{i.get('publisher') or 'unknown publisher'}; {c['status'].replace('_', ' ')}", False),
+                ("Seen", f"{rules.ny(seen):%H:%M} ET")]
+        if base is not None:
+            rows.append(("Move", f"{q.mid - base:+.2f} in {mins} min"))
+        return card("📰", f"NEWS · {c['bias'].upper()}", rows,
+                    c["mechanism"] or "No mechanism stated.", "info only · no trade suggested · {ID}",
+                    [f"{pub}first seen {rules.ny(seen):%H:%M} ET. Evidence: {self._evidence_label(i)}.",
+                     f"Model reading: {c['bias']}." + (f" Against it: {c['contradiction']}" if c.get("contradiction") else ""),
+                     self._reaction(q, seen, now), self._range_note(q).strip()],
+                    lead=i["title"][:200])
 
     # ---------------------------------------------------------------- updates
     def updates(self, q, items, now):
@@ -281,13 +296,15 @@ class InfoLane:
                 continue
             c = i["classification"]
             rel = i["relation"]
-            text = "\n".join([
-                f"[BRENT INFO] {{ID}} | UPDATE to {earlier}: {rel.upper()} | INFORMATION ONLY",
-                f"{i['title'][:200]} ({i.get('publisher') or '?'}; {c['status'].replace('_', ' ')}; "
-                f"evidence: {self._evidence_label(i)})",
-                "This reports the " + rel + " as published; it does not by itself prove or disprove the "
-                "earlier report." if rel in ("denial", "correction") else f"Reported as a {rel} of the earlier item.",
-                self._reaction(q, datetime.fromisoformat(i["first_seen"]), now)])
+            text = card("🔁", f"UPDATE to {earlier}: {rel.upper()}",
+                        [("Source", f"{i.get('publisher') or '?'}; {c['status'].replace('_', ' ')}", False)],
+                        "This reports the " + rel + " as published; it does not by itself prove or disprove "
+                        "the earlier report." if rel in ("denial", "correction") else
+                        f"Reported as a {rel} of the earlier item.",
+                        "info only · {ID}",
+                        [f"Evidence: {self._evidence_label(i)}",
+                         self._reaction(q, datetime.fromisoformat(i["first_seen"]), now)],
+                        lead=i["title"][:200])
             info_id = self.emit("update", "update", text, now, {"item": i["key"], "cluster": cluster,
                                                                 "updates": earlier, "relation": rel})
             self.st["sent_items"][i["key"]] = info_id
@@ -312,11 +329,12 @@ class InfoLane:
             if not beyond or self.allowed("routine", now):
                 continue
             word = "above" if side > 0 else "below"
-            text = "\n".join([
-                "[BRENT INFO] {ID} | LEVEL | INFORMATION ONLY | no trade suggested",
-                f"Brent has held {word} {name} {price:.2f} for 15 minutes: mid {q.mid:.2f} "
-                f"({(q.mid - price) / a:+.2f} daily ATR from it).",
-                "Any trade setup is handled separately by WATCH/ENTRY messages." + self._range_note(q)])
+            text = card("📍", f"HELD {word.upper()} {name.upper()}",
+                        [("Level", f"{price:.2f}"), ("Now", f"{q.mid:.2f} ({(q.mid - price) / a:+.2f} ATR)")],
+                        "Held 15 min. Trade setups come separately as WATCH/ENTRY.",
+                        "info only · no trade suggested · {ID}",
+                        [f"Brent has held {word} {name} {price:.2f} for 15 minutes: mid {q.mid:.2f} "
+                         f"({(q.mid - price) / a:+.2f} daily ATR from it).", self._range_note(q).strip()])
             if self.emit("level", "routine", text, now, {"level": name, "price": price}):
                 self.st["levels"][key] = today
 
@@ -334,10 +352,11 @@ class InfoLane:
             return
         if self.allowed("urgent", now):
             return
-        text = "\n".join([
-            f"[BRENT INFO] {{ID}} | FAST MOVE {way.upper()} | INFORMATION ONLY | no trade suggested",
-            f"Brent {chg:+.2f} in the last 60 minutes ({chg / a:+.2f} daily ATR): {past:.2f} -> {q.mid:.2f}.",
-            "Cause not established; check the news before acting." + self._range_note(q)])
+        text = card("⚡", f"FAST MOVE {way.upper()} {'▲' if chg > 0 else '▼'}",
+                    [("1h", f"{chg:+.2f} ({chg / a:+.2f} ATR)"), ("Path", f"{past:.2f} → {q.mid:.2f}")],
+                    "Cause not established. Check the news.", "info only · no trade suggested · {ID}",
+                    [f"Brent {chg:+.2f} in the last 60 minutes ({chg / a:+.2f} daily ATR): {past:.2f} -> {q.mid:.2f}.",
+                     self._range_note(q).strip()])
         if self.emit("move", "urgent", text, now, {"change": round(chg, 3), "atr": a}):
             self.st["moves"][way] = _iso(now)
 

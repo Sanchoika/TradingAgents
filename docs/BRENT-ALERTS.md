@@ -205,31 +205,37 @@ setting. When hedging is off, an opposite-direction order reduces or closes your
 position instead of opening a new one. Check this before any future execution work; this
 module does not do execution.
 
-## 7. Example alert (EXAMPLE, test data, not a real signal)
+## 7. Message style ("6A card", from 2026-11-06)
+
+Every Telegram message is a short card in Telegram HTML: an icon and a bold title that always
+says BRENT, a heavy divider, label/value rows with prices in code boxes, one italic note, and a
+footer with the paper/no-order status and the id. The long detail (exact validity rule, quote,
+invalidation rule, costs, size, position check, news and chart lines, rules version) sits in a
+collapsed quote under the card: tap it to open. Nothing was removed, only folded away.
+
+`hermes send` switches to HTML mode by itself when the text contains a tag, so no flag is
+needed. All values are HTML-escaped (`messages.card`); an unescaped `<` or `&` would make
+Telegram reject the parse and Hermes would resend the raw text with the tags visible.
+
+Example ENTRY (example numbers, not a real signal), as typed by the code:
 
 ```
-[BRENT PAPER/ADVISORY] BR-20261103-001 | NO ORDER PLACED
-LONG BCO_USD (Brent CFD, OANDA practice prices)
-Entry: BUY only if ask is 110.00-110.30
-Valid until 09:00:59 ET (14:00:59 UTC), ONLY while the executable ask stays within 110.00-110.30 and spread is below 0.08. Otherwise skip. Check the broker quote before you submit.
-Quote 08:59:59 ET (13:59:59 UTC): bid 110.170 / ask 110.200 / spread 0.030
-Stop-loss order (broker): 109.50
-Setup invalid if a 15-min candle closes below 110.00 (a reason to skip or exit, not a broker order)
-Targets (conditional): 1R 110.90 | 2R 111.60
-Holding period: up to 8h; forecast judged at +4h
-Reward/risk after costs: 0.76 at 1R, 1.61 at 2R (1 spread slippage on entry and stop, financing 45%/yr for 8h, CAD conversion ±1%)
-Size: not shown: no approved risk % for this module (set risk_pct). Risk per unit (1 barrel) to the stop is about 0.70 USD (~0.98 CAD) before costs.
-
----
-Why: 15-min candle ending 09:00:00 ET (O 109.90 H 110.50 L 109.80 C 110.50) vs yesterday's high 110.00; break threshold 0.20 = 0.1 x daily ATR 2.00. It closed beyond the level and price is back at it. Scenario A: the break holds and price extends up. Scenario B: a 15-min close back through 110.00 means the break failed. Untested rule, forward paper tracking only.
-Reasons to skip: oil news in the last 60 min: fast moves possible; you already hold a Brent position (see position check)
-Position check: open BCO_USD: SHORT 1,500 (trade 287 at 116.20). Account hedging is OFF: this order would reduce or close that position instead of opening a separate trade
-News (context only; not a direction call, may already be priced in):
-- [Brent] Brent edges higher as traders weigh supply outlook (Example Wire; published 08:20:00 ET, received 09:00:00 ET) https://example.com/brent-story
-Decided 09:00:00 ET (14:00:00 UTC). Rules brent-v1 cfg c1484be01af2. Paper tracking only.
-
-[BRENT PAPER/ADVISORY] BR-20261103-001 SKIP: no longer valid at 09:00:14 ET: ask 110.430 left the entry zone 110.00-110.30. Do not chase. A new evaluation and a new signal are needed.
+🟢 <b>LONG BRENT</b>
+━━━━━━━━━━━━
+Entry  <code>BUY ask 107.80–108.05</code>
+Stop  <code>107.20</code>
+Target  <code>108.65 · 109.50</code>
+Until  <code>10:42:30 ET</code>
+━━━━━━━━━━━━
+<i>Risk: EIA report next week can move price fast.</i>
+paper · NO ORDER PLACED · BR-20261106-001 · <a href="...">report</a>
+<blockquote expandable>Valid until ..., ONLY while the executable ask stays within ...
+(quote, stop rule, targets, news, chart, costs, size, position check, policy row)</blockquote>
 ```
+
+Icons: 🟢 long / 🔴 short entry, 👀 watch, ✖️ watch cancelled, ⛔ skip, ⌛ expired,
+☀️/🕛 brief, 📰 news, 🔁 update, 📍 level, ⚡ fast move, 📏 range, 🛠 problem, ⚙️ status.
+`python -m tradingagents.brent style-sample` prints a labelled sample; `--send` sends ONE.
 
 ## 8. Running it
 

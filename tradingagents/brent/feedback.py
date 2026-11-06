@@ -13,7 +13,9 @@ only: no "missed opportunity" universe was defined in advance, so they are not s
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -45,9 +47,19 @@ def sent_messages(events: list[dict], since: datetime) -> list[dict]:
         if mid in seen:
             continue
         seen.add(mid)
-        out.append({"id": mid, "kind": kind, "ts": ts, "summary": text.splitlines()[1][:160]
-                    if "\n" in text else text[:160]})
+        out.append({"id": mid, "kind": kind, "ts": ts, "summary": summary_of(text)})
     return out
+
+
+def summary_of(text: str) -> str:
+    """Short plain summary of a sent text: card style (title, first rows) or the old style (line 2)."""
+    from .messages import DIV
+
+    if DIV in text:
+        card = html.unescape(re.sub(r"<[^>]+>", "", text.split("<blockquote")[0]))
+        lines = [ln.strip() for ln in card.splitlines() if ln.strip() and ln.strip() != DIV]
+        return " · ".join(lines[:3])[:160]
+    return text.splitlines()[1][:160] if "\n" in text else text[:160]
 
 
 def record(folder: str | Path, user: str, message_id: str, kind: str, value: str, now: datetime) -> dict:

@@ -203,7 +203,7 @@ def test_signal_and_start_carry_experiment_manifest(tmp_path):
     assert m["code_commit"] and m["experiment_hash"]
     start = [e for e in store.events() if e["event"] == "start"][0]
     assert start["manifest"]["experiment"] == "brent-exp-3"
-    assert "Experimental entry alerts are ENABLED" in sender.texts[0]
+    assert "entry alerts ON" in sender.texts[0]
 
 
 def test_failed_alert_send_gets_no_paper_fill(tmp_path):
@@ -402,7 +402,7 @@ def test_alert_switch_reloads_without_restart(tmp_path):
     client.m15 = [{**client.m15[0], "time": client.m15[0]["time"]}]  # same bar; still fresh
     mon.tick()
     assert mon.cfg.alerts_enabled is True
-    assert any(t.startswith("[BRENT STATUS] Experimental Brent entry alerts are ENABLED") for t in sender.texts)
+    assert any("BRENT ENTRY ALERTS ON" in t for t in sender.texts)
     assert any(e["event"] == "alerts_switch" and e["enabled"] for e in store.events())
 
 
