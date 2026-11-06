@@ -7,6 +7,12 @@ the named Brent services -> read back (services active, the running code reports
 health OK within the wait). Any failure after the switch puts every checkout back on the previous
 commit and restarts the same services. It never touches stock-test units: their enabled/active
 state is recorded before and compared after, and a change aborts with rollback.
+
+Server use: the venv needs pytest once (``uv pip install pytest``). Run it from a worktree of the
+commit being deployed, because ``python -m`` puts the current folder ahead of PYTHONPATH:
+``git -C /root/TradingAgents worktree add --detach /tmp/ta-SHA SHA && cd /tmp/ta-SHA &&
+/root/TradingAgents/.venv/bin/python -m tradingagents.ops deploy SHA --checkout /root/TradingAgents
+--checkout /root/ta-brent --python /root/TradingAgents/.venv/bin/python --health-cmd ...``
 """
 
 from __future__ import annotations
@@ -84,7 +90,10 @@ def deploy(plan: Plan, run: Callable = _run, now: Callable[[], datetime] = lambd
     try:
         r = run([plan.venv_python, "-m", "pytest", "-q", "-x", *plan.test_args], check=False, cwd=scratch)
         if r.returncode:
-            raise DeployError(f"tests failed at {plan.commit[:12]}: {r.stdout[-400:]}")
+            why = ((r.stdout or "") + (r.stderr or ""))[-400:]
+            if "No module named pytest" in why or "No module named 'pytest'" in why:
+                why = "pytest is not installed in the venv (install it once: uv pip install pytest)"
+            raise DeployError(f"tests failed at {plan.commit[:12]}: {why}")
         say("tests passed in scratch worktree")
     finally:
         run(["git", "-C", main, "worktree", "remove", "--force", scratch], check=False)
