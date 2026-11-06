@@ -245,7 +245,9 @@ def cmd_health(args, cfg) -> int:
 
         msgs = notices.step(Path(cfg.journal_dir) / "health_notices.json", bad, datetime.now(UTC))
         if msgs:
-            text = "[BRENT OPS] " + "\n".join(msgs)
+            from .messages import ops_text
+
+            text = ops_text("\n".join(msgs))
             ok, _ = _sender(cfg)(text)
             store.write("ops_notice_sent", accepted=ok, text=text)
     if args.ping_file:
@@ -368,8 +370,10 @@ class _MonitorWatch:
             why = self.problem()
             if why and time.monotonic() - self.last_sent > self.REPEAT_S:
                 self.last_sent = time.monotonic()
-                _sender(self.cfg)(f"[BRENT OPS] {why}. No entry alerts while it is down. "
-                                  "Restart: bash ~/ta-brent/scripts/brent_activate.sh")
+                from .messages import ops_text
+
+                _sender(self.cfg)(ops_text(f"{why}. No entry alerts while it is down. "
+                                           "Restart: bash ~/ta-brent/scripts/brent_activate.sh"))
         except Exception as exc:  # the watch must never stop news collection
             print(f"monitor watch failed: {exc}", file=sys.stderr)
 
@@ -419,6 +423,46 @@ def cmd_info_test(args, cfg) -> int:
             f"Sent {now:%Y-%m-%d %H:%M} UTC. Phone display is not measured unless you confirm it.")
     ok, secs = _sender(cfg)(text)
     store.write("info_test", accepted=ok, seconds=round(secs, 2), text=text)
+    print(f"accepted by the notify command: {ok}")
+    return 0 if ok else 1
+
+
+SAMPLE_SIG = {
+    "id": "BR-SAMPLE", "label": "chart-led, no material news", "instrument": "BCO_USD",
+    "setup": {"direction": "LONG", "zone_lo": 107.80, "zone_hi": 108.05, "stop": 107.20,
+              "invalid_close": 107.75},
+    "quote": {"time": "2026-11-06T15:41:30+00:00", "bid": 107.93, "ask": 107.96, "spread": 0.03},
+    "plan": {"t1": 108.65, "t2": 109.50, "rr1": 0.76, "rr2": 1.61,
+             "costs_note": "example costs"},
+    "expires_at": "2026-11-06T15:42:30+00:00", "decided_at": "2026-11-06T15:41:30+00:00",
+    "news_line": "EXAMPLE: no material Brent news in 6h; no news is not a direction signal.",
+    "chart_line": "EXAMPLE: broke yesterday's high 107.75 and retested it.",
+    "contradiction": "EXAMPLE: EIA report next week can move price fast.",
+    "sizing": "not shown", "skip_reasons": [], "position_note": "EXAMPLE only",
+    "policy_row": "no-news", "rules": "example", "config_hash": "example",
+    "report_url": "",
+}
+
+
+def sample_text() -> str:
+    """The ENTRY card filled with example numbers, labelled SAMPLE in the title and footer."""
+    from .messages import alert_text
+
+    text = alert_text(SAMPLE_SIG, {"max_spread": 0.08, "max_hold_hours": 8})
+    head, rest = text.split("\n", 1)
+    rest = rest.replace("paper · NO ORDER PLACED · BR-SAMPLE",
+                        "SAMPLE of the new style · example numbers · not a signal · no order")
+    return head.replace("<b>LONG BRENT</b>", "<b>SAMPLE · LONG BRENT</b>") + "\n" + rest
+
+
+def cmd_style_sample(args, cfg) -> int:
+    """Print the sample ENTRY card; with --send, deliver ONE clearly labelled sample."""
+    text = sample_text()
+    if not args.send:
+        print(text)
+        return 0
+    ok, secs = _sender(cfg)(text)
+    Store(cfg.journal_dir).write("style_sample", accepted=ok, seconds=round(secs, 2), text=text)
     print(f"accepted by the notify command: {ok}")
     return 0 if ok else 1
 
@@ -477,6 +521,8 @@ def main(argv=None) -> int:
     wk = sub.add_parser("weekly", help="weekly review (preview by default; --send delivers it)")
     wk.add_argument("--send", action="store_true")
     wk.add_argument("--json", action="store_true")
+    ss = sub.add_parser("style-sample", help="show (or --send ONE) labelled sample of the alert style")
+    ss.add_argument("--send", action="store_true")
     sub.add_parser("info-test", help="send ONE labelled end-to-end INFO test message")
     so = sub.add_parser("second-opinion", help="one bounded model review of an ENTRY (logged only)")
     so.add_argument("id")
@@ -498,7 +544,7 @@ def main(argv=None) -> int:
                 "dashboard": cmd_dashboard, "manual": cmd_manual,
                 "news-check": cmd_news_check, "news-report": cmd_news_report,
                 "news-events": cmd_news_events, "weekly": cmd_weekly,
-                "info-test": cmd_info_test, "second-opinion": cmd_second_opinion}[args.cmd](args, cfg)
+                "info-test": cmd_info_test, "style-sample": cmd_style_sample, "second-opinion": cmd_second_opinion}[args.cmd](args, cfg)
     except (OandaReadError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

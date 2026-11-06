@@ -197,7 +197,7 @@ def test_alert_content_and_paper_fill(tmp_path):
     a = alerts(sender)
     assert len(a) == 1
     text = a[0]
-    for must in ("BR-20261103-001", "PAPER/ADVISORY", "NO ORDER PLACED", "LONG BCO_USD",
+    for must in ("BR-20261103-001", "<b>LONG BRENT</b>", "NO ORDER PLACED", "BUY ask 110.00–110.30",
                  "Valid until", "ET (", "UTC)", "ONLY while the executable ask",
                  "Suggested stop 110.00".replace("110.00", "109.50"), "(no order placed)",
                  "cancels this entry suggestion", "paper record exits only at the stop", "1R", "2R", "hold up to 8h", "chart-led, no material news",
@@ -257,7 +257,7 @@ def test_quote_errors_suppress_and_raise_ops_notice_once(tmp_path):
     for _ in range(25):
         mon.tick()
         clock.advance(3)
-    ops = [t for t in sender.texts if t.startswith("[BRENT OPS]")]
+    ops = [t for t in sender.texts if "<b>BRENT PROBLEM</b>" in t]
     assert len(ops) == 1 and alerts(sender) == []
 
 
@@ -414,7 +414,7 @@ def test_separate_from_morning_demo(tmp_path):
     demo.write("run_end")
     assert [e["event"] for e in demo.events()] == ["run_start", "run_end"]
     assert store.dir != demo.dir and store.journal_path.name == "signals.jsonl"
-    assert all(t.startswith("[BRENT") for t in sender.texts)
+    assert all("BRENT" in t.split("\n")[0] for t in sender.texts)
     assert BrentConfig().journal_dir.endswith("brent")
 
 
@@ -485,7 +485,7 @@ def test_conflicting_news_blocks_but_chart_only_arm_records(tmp_path):
     mon.tick()  # the shadow trade is paper-tracked, never messaged
     assert any(e["event"] == "paper_fill" and e["id"] == "SH-20261103-001" for e in store.events())
     # Only one WATCH (the blocker is the conflicting news); the shadow trade is never messaged.
-    assert len(sender.texts) == 1 and sender.texts[0].startswith("[BRENT WATCH]")
+    assert len(sender.texts) == 1 and "<b>BRENT WATCH" in sender.texts[0]
     assert "NOT AN ENTRY" in sender.texts[0] and "conflict" in sender.texts[0]
 
 
@@ -654,7 +654,7 @@ def test_range_80_115_inclusive_boundaries_use_mid_and_zone():
 
 # ----------------------------------------------------------- WATCH lifecycle
 def watches(sender):
-    return [t for t in sender.texts if t.startswith("[BRENT WATCH]")]
+    return [t for t in sender.texts if "<b>BRENT WATCH" in t]
 
 
 def arm_setup(mon, client, clock):
@@ -680,7 +680,7 @@ def test_one_watch_per_state_then_entry_links_to_it(tmp_path):
     clock.advance(10)
     mon.tick()
     assert len(alerts(sender)) == 1 and "follows WATCH BW-20261103-001" in alerts(sender)[0]
-    assert "| ENTRY |" in alerts(sender)[0]
+    assert "<b>LONG BRENT</b>" in alerts(sender)[0]
     clock.advance(10)
     mon.tick()
     assert not [t for t in sender.texts if "CANCELLED" in t]       # linked, not cancelled
@@ -697,7 +697,7 @@ def test_watch_is_cancelled_when_the_setup_breaks(tmp_path):
     client.m15 = m15(109.6, high=110.0, low=109.5, end=clock.t)   # closes back through the level
     mon.tick()
     cancel = [t for t in sender.texts if "CANCELLED" in t]
-    assert len(cancel) == 1 and "BW-20261103-001" in cancel[0] and "no order was placed" in cancel[0]
+    assert len(cancel) == 1 and "BW-20261103-001" in cancel[0] and "No order was placed" in cancel[0]
     clock.advance(10)
     mon.tick()
     assert len([t for t in sender.texts if "CANCELLED" in t]) == 1
@@ -878,7 +878,7 @@ def test_failed_entry_is_never_resent(tmp_path):
     for _ in range(20):
         clock.advance(60)
         mon.tick()
-    assert len([t for t in alerts(sender) if "| ENTRY |" in t]) == 1
+    assert len([t for t in alerts(sender) if "<b>LONG BRENT</b>" in t]) == 1
     assert any(e["event"] == "paper_missed" and e["reason"] == "alert not delivered"
                for e in store.events())
 

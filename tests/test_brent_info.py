@@ -70,7 +70,7 @@ def test_brief_at_seven_once_with_labels_and_no_trade_words(tmp_path):
     ln.step(quote(84.12), CTX, DAILY, str(tmp_path), T0 + timedelta(minutes=2))
     assert len(sent) == 1
     b = sent[0]
-    assert b.startswith("[BRENT INFO] BI-20261105-001 | 07:00 ET BRIEF | INFORMATION ONLY")
+    assert b.startswith("☀️ <b>BRENT 07:00 ET BRIEF</b>") and "info only · no trade suggested · BI-20261105-001" in b
     assert "Brent mid 84.10" in b and "Next EIA weekly report" in b and "20-day range" in b
     assert not any(w in b for w in TRADE_WORDS)
     assert store.of("info")[0]["kind"] == "brief"
@@ -99,7 +99,7 @@ def test_headline_once_per_event_then_linked_denial_update(tmp_path):
     dup = item("b", "OPEC+ weighs longer output cuts", t1 + timedelta(minutes=5), cluster="a", repeat_of="a")
     write_news(tmp_path, [a, dup], [{**CLS, "key": "a"}, {**CLS, "key": "b", "relation": "repeat"}])
     ln.step(quote(84.30), CTX, DAILY, str(tmp_path), t1 + timedelta(minutes=10))
-    news_msgs = [s for s in sent if "| NEWS |" in s]
+    news_msgs = [s for s in sent if "<b>BRENT NEWS" in s]
     assert len(news_msgs) == 1 and "OPEC+ weighs longer cuts" in news_msgs[0]
     assert "Price since first seen" in news_msgs[0] and "not proof" in news_msgs[0]
     assert "headline and snippet only" in news_msgs[0]
@@ -114,7 +114,7 @@ def test_headline_once_per_event_then_linked_denial_update(tmp_path):
         ln.step(quote(84.00), CTX, DAILY, str(tmp_path), t1 + timedelta(minutes=40 + k))
     upd = [s for s in sent if "UPDATE to BI-" in s]
     assert len(upd) == 1 and "DENIAL" in upd[0] and "does not by itself prove" in upd[0]
-    assert len([s for s in sent if "| NEWS |" in s]) == 1
+    assert len([s for s in sent if "<b>BRENT NEWS" in s]) == 1
 
 
 def test_routine_cap_and_spacing_but_updates_still_go_out(tmp_path):
@@ -162,10 +162,10 @@ def test_level_needs_fifteen_minutes_beyond_it(tmp_path):
     for m in range(16):
         ln.record_mid(85.3, now - timedelta(minutes=15 - m))
     ln.step(quote(85.3), {**CTX, "pdh": 85.0}, DAILY[:5], str(tmp_path), now)
-    lv = [s for s in sent if "| LEVEL |" in s]
+    lv = [s for s in sent if "<b>BRENT HELD" in s]
     assert len(lv) == 1 and "held above yesterday's high 85.00" in lv[0]
     ln.step(quote(85.3), {**CTX, "pdh": 85.0}, DAILY[:5], str(tmp_path), now + timedelta(hours=1))
-    assert len([s for s in sent if "| LEVEL |" in s]) == 1
+    assert len([s for s in sent if "<b>BRENT HELD" in s]) == 1
 
 
 def test_outside_the_trade_range_is_labelled(tmp_path):
@@ -203,12 +203,12 @@ def test_info_lane_never_creates_trades_inside_the_monitor(tmp_path):
         for _ in range(10):
             clock.advance(30)
             mon.tick()
-        trade = [t for t in sender.texts if not t.startswith("[BRENT INFO]")]
+        trade = [t for t in sender.texts if "info only" not in t]
         return mon, sender, store, trade
 
     mon_on, sender_on, store_on, trade_on = run(tmp_path / "on", True)
     _, _, _, trade_off = run(tmp_path / "off", False)
-    infos = [t for t in sender_on.texts if t.startswith("[BRENT INFO]")]
+    infos = [t for t in sender_on.texts if "info only" in t]
     assert len(infos) == 1 and "09:01 ET BRIEF" in infos[0]       # the lane did send
     assert trade_on == trade_off                                    # and changed nothing else
     assert not any(str(e.get("id", "")).startswith("BI-") for e in store_on.events()
