@@ -105,7 +105,8 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
         rows += _earnings_pass(broker, analyze, cfg, journal, trade_date, nav, dry_run, halted,
                                earnings or yahoo_earnings, now or datetime.now(UTC),
                                edgar or edgar_earnings)
-        rows.append(journal.write("run_end", trade_date=trade_date, dry_run=dry_run, ok=True))
+        rows.append(journal.write("run_end", trade_date=trade_date, dry_run=dry_run,
+                                  **run_health(rows, len(cfg.universe))))
         return rows
 
     for instrument, ticker in cfg.instruments.items():
@@ -115,8 +116,21 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
         except Exception as exc:  # one instrument failing must not stop the others
             rows.append(journal.write("error", instrument=instrument, ticker=ticker,
                                       error=f"{type(exc).__name__}: {exc}"))
-    rows.append(journal.write("run_end", trade_date=trade_date, dry_run=dry_run, ok=True))
+    rows.append(journal.write("run_end", trade_date=trade_date, dry_run=dry_run,
+                              **run_health(rows, len(cfg.instruments))))
     return rows
+
+
+def run_health(rows: list[dict], symbols: int) -> dict:
+    """Did this run actually work? ``ok`` is false when at least half of the analyses failed
+    or no symbol's earnings could be looked up; ``degraded`` when anything failed at all."""
+    errors = [r for r in rows if r.get("event") == "error"]
+    lookup = sum(str(r.get("error", "")).startswith("earnings lookup") for r in errors)
+    failed = len(errors) - lookup
+    analyses = sum(r.get("event") == "decision" for r in rows) + failed
+    ok = not (analyses and 2 * failed >= analyses) and not (symbols and lookup >= symbols)
+    return {"ok": ok, "degraded": bool(errors), "analyses": analyses, "analysis_errors": failed,
+            "lookup_errors": lookup}
 
 
 def _llm_label(cfg) -> str:

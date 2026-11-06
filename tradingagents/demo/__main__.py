@@ -173,13 +173,20 @@ def cmd_watchdog(args, cfg) -> int:
     """Alert (through notify_command) when a weekday's scheduled run left no journal entry."""
     from datetime import datetime
 
-    from .notes import missing_run, notify
+    from .notes import failed_run, missing_run, notify
 
-    day = missing_run(Journal(cfg.journal_dir).events(), datetime.now().astimezone())
-    if day is None:
+    events = Journal(cfg.journal_dir).events()
+    day = missing_run(events, datetime.now().astimezone())
+    bad = failed_run(events) if day is None else None
+    if day is None and bad is None:
         print("ok: the latest scheduled run is in the journal")
         return 0
-    text = f"TradingAgents demo: NO RUN recorded for {day}. Is the PC on and logged in? See demo.log."
+    if day is not None:
+        text = f"TradingAgents demo: NO RUN recorded for {day}. Is the PC on and logged in? See demo.log."
+    else:
+        text = (f"TradingAgents demo: the {bad['trade_date']} run FINISHED WITH ERRORS: "
+                f"{bad.get('analysis_errors', '?')} of {bad.get('analyses', '?')} analyses failed, "
+                f"{bad.get('lookup_errors', 0)} earnings lookups failed. See demo.log.")
     print(text)
     if cfg.notify_command:
         notify(cfg.notify_command, text)
