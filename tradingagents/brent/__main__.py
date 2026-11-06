@@ -402,11 +402,14 @@ def cmd_weekly(args, cfg) -> int:
 
 
 def cmd_info_test(args, cfg) -> int:
-    """ONE clearly labelled end-to-end INFO test to the configured chat. Refuses a second one."""
+    """ONE clearly labelled end-to-end INFO test to the configured chat.
+
+    Refuses once a test was accepted by the notify command; a failed attempt (for example the
+    notify command not found) sent nothing, so it may be retried."""
     from datetime import UTC, datetime
 
     store = Store(cfg.journal_dir)
-    if any(e["event"] == "info_test" for e in store.events()):
+    if any(e["event"] == "info_test" and e.get("accepted") for e in store.events()):
         print("an INFO test was already sent; not sending another", file=sys.stderr)
         return 3
     now = datetime.now(UTC)
