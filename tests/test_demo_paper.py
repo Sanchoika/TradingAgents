@@ -655,3 +655,104 @@ def test_early_read_removes_market_move_and_calls_checkpoints():
     assert few["call"] == "too early" and few["checkpoint"] is None
     hold = early_read([{"ticker": "UP", "trade_date": ds[0], "rating": "Hold"}], bars, today="2026-04-01")
     assert hold["scored"] == 0 and hold["call"] == "too early"
+
+
+def _nyse_rule_holidays(year: int) -> set[str]:
+    """NYSE full closures from the published rules, independent of the hard-coded table."""
+    from datetime import date, timedelta
+
+    def nth(month, weekday, n):
+        d = date(year, month, 1)
+        d += timedelta(days=(weekday - d.weekday()) % 7)
+        return d + timedelta(weeks=n - 1)
+
+    def last(month, weekday):
+        d = date(year, month + 1, 1) - timedelta(days=1)
+        return d - timedelta(days=(d.weekday() - weekday) % 7)
+
+    def observed(d):
+        return d - timedelta(days=1) if d.weekday() == 5 else d + timedelta(days=1) if d.weekday() == 6 else d
+
+    a, b, c = year % 19, year // 100, year % 100   # Anonymous Gregorian Easter
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    m = (32 + 2 * e + 2 * i - h - k) % 7
+    n = (a + 11 * h + 22 * m) // 451
+    month, day = divmod(h + m - 7 * n + 114, 31)
+    good_friday = date(year, month, day + 1) - timedelta(days=2)
+
+    out = {good_friday, nth(1, 0, 3), nth(2, 0, 3), last(5, 0), nth(9, 0, 1), nth(11, 3, 4)}
+    for fixed in (date(year, 6, 19), date(year, 7, 4), date(year, 12, 25)):
+        out.add(observed(fixed))
+    ny = date(year, 1, 1)
+    if ny.weekday() != 5:          # a Saturday New Year's Day is not observed on Dec 31
+        out.add(observed(ny))
+    return {x.isoformat() for x in out}
+
+
+def test_holiday_table_matches_nyse_rules_every_covered_year():
+    from tradingagents.demo import sessions
+
+    table = set(sessions.NYSE_HOLIDAYS)
+    for year in sessions.COVERED_YEARS:
+        listed = {d for d in table if d.startswith(str(year))}
+        assert listed == _nyse_rule_holidays(year), year
+
+
+def test_new_year_on_saturday_keeps_dec_31_open():
+    from tradingagents.demo import sessions
+
+    # 2028-01-01 is a Saturday: 2027-12-31 trades, so a fill on Mon 2027-12-27 is held
+    # 27, 28, 29, 30, 31 and the exit order goes on the 2027-12-31 run.
+    assert "2027-12-31" not in sessions.NYSE_HOLIDAYS
+    assert sessions.sessions_between("2027-12-31", "2028-01-03") == 1
+    assert sessions.planned_exit_run("2027-12-27", 5) == "2027-12-31"
+
+
+def test_run_where_every_analysis_fails_is_not_ok(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(mode="earnings", universe=["AAA", "BBB"], journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+
+    def broken(ticker, date):
+        raise RuntimeError("provider error")
+
+    rows = run_once(b, broken, cfg, j, "2026-11-03",
+                    earnings=lambda t: [pd.Timestamp("2026-11-02T21:00:00Z")],
+                    now=datetime(2026, 11, 3, 13, tzinfo=UTC), edgar=lambda t: [])
+    end = rows[-1]
+    assert end["event"] == "run_end" and end["ok"] is False and end["degraded"] is True
+    assert end["analyses"] == 2 and end["analysis_errors"] == 2
+
+    from tradingagents.demo.notes import failed_run
+    assert failed_run(j.events())["trade_date"] == "2026-11-03"
+
+
+def test_clean_run_is_ok_and_not_degraded(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(mode="earnings", universe=["AAA"], journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+    rows = run_once(b, fixed_analyzer("Hold"), cfg, j, "2026-11-03",
+                    earnings=lambda t: [pd.Timestamp("2026-11-02T21:00:00Z")],
+                    now=datetime(2026, 11, 3, 13, tzinfo=UTC), edgar=lambda t: [])
+    assert rows[-1]["ok"] is True and rows[-1]["degraded"] is False and rows[-1]["analyses"] == 1
+
+    from tradingagents.demo.notes import failed_run
+    assert failed_run(j.events()) is None
+
+
+def test_bare_run_start_after_run_end_existed_is_a_missing_run():
+    from tradingagents.demo.notes import missing_run
+
+    now = datetime(2026, 11, 10, 14, tzinfo=UTC)
+    # a journal with run_start only (run_end never written) used to pass forever
+    only_starts = [{"event": "run_start", "trade_date": "2026-11-10", "dry_run": False}]
+    assert missing_run(only_starts, now) == "2026-11-10"
+    # legacy days before run_end existed are still trusted
+    legacy = [{"event": "run_start", "trade_date": "2026-11-04", "dry_run": False}]
+    assert missing_run(legacy, datetime(2026, 11, 4, 14, tzinfo=UTC)) is None

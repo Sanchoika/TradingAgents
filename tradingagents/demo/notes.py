@@ -110,13 +110,23 @@ def failure_text(exc: BaseException) -> str:
     return f"{text}\n{hint}" if hint else text
 
 
+RUN_END_SINCE = "2026-11-05"   # first trade date whose run writes run_end
+
+
+def failed_run(events: list[dict]) -> dict | None:
+    """The latest real run_end, if it reported ok=false (a run that finished but did not work)."""
+    ends = [e for e in events if e["event"] == "run_end" and not e.get("dry_run")]
+    return ends[-1] if ends and ends[-1].get("ok") is False else None
+
+
 def missing_run(events: list[dict], now, run_hour: int = 8, grace_hours: int = 1) -> str | None:
     """Date of the latest weekday whose scheduled run has no journal entry, else None.
 
     ``now`` is a timezone-aware time; the schedule is New York time. A run counts when the
     journal has a real (not dry-run) ``run_end`` for that date or a later one: a run that
-    crashed after ``run_start`` is not a success. Journals from before ``run_end`` existed
-    are trusted for ``run_start`` dates earlier than the first ``run_end``.
+    crashed after ``run_start`` is not a success. A bare ``run_start`` is trusted only for
+    dates before ``RUN_END_SINCE`` (when ``run_end`` was introduced) and before the first
+    ``run_end``, so a journal that stops writing ``run_end`` cannot pass as healthy.
     """
     from datetime import timedelta
     from zoneinfo import ZoneInfo
@@ -131,5 +141,6 @@ def missing_run(events: list[dict], now, run_hour: int = 8, grace_hours: int = 1
     first_end = min(ends, default=None)
     done = ends + [e["trade_date"] for e in events
                    if e["event"] == "run_start" and not e.get("dry_run")
+                   and e["trade_date"] < RUN_END_SINCE
                    and (first_end is None or e["trade_date"] < first_end)]
     return None if done and max(done) >= day.isoformat() else day.isoformat()
