@@ -235,3 +235,23 @@ def test_second_opinion_is_bounded_logged_and_timestamped(tmp_path):
                                  now=datetime(2026, 11, 5, 13, tzinfo=UTC))   # 08:00 ET
     assert quiet["refused"].startswith("quiet window") and quiet["verdict"] is None
     assert len([e for e in store.events() if e["event"] == "second_opinion"]) == 2
+
+
+def test_info_test_retries_after_a_failed_send_but_never_after_an_accepted_one(tmp_path, monkeypatch):
+    from tradingagents.brent import __main__ as cli
+    from tradingagents.brent.config import BrentConfig
+
+    cfg = BrentConfig(journal_dir=str(tmp_path))
+    results = iter([(False, 0.1), (True, 0.1)])
+    sent = []
+
+    def sender(c):
+        def send(text):
+            sent.append(text)
+            return next(results)
+        return send
+
+    monkeypatch.setattr(cli, "_sender", sender)
+    assert cli.cmd_info_test(None, cfg) == 1          # notify failed: nothing reached the chat
+    assert cli.cmd_info_test(None, cfg) == 0          # so one retry is allowed
+    assert cli.cmd_info_test(None, cfg) == 3 and len(sent) == 2   # accepted once: never again
