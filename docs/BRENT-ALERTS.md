@@ -91,7 +91,7 @@ not start when you read the message. The alert is valid only while **all** of th
 
 New entry suggestions also need fresh chart data: the latest completed 15-min candle must
 have been processed successfully within 18 min, and the last candle refresh must not have
-failed. A failed refresh blocks new entries (logged, plus one ops notice per 30 min).
+failed. A failed refresh blocks new entries (logged quietly; see "Problems" below).
 Ages and the usable-time check are recomputed after the slow network and news work, just
 before the decision.
 
@@ -119,7 +119,7 @@ never from results.
 - Each setup alerts at most once (deduplicated by day, family, side and level).
 - No new alert within 15 min of the last one, or while another alert is live.
 - Messages go out only for an alert, a SKIP or EXPIRED update, an operating-range change,
-  or an operational problem. Operational notices repeat at most every 30 min.
+  or an operational problem that lasted over 1 hour (see "Problems" below).
 - An alert is suppressed in any of these cases. The reason is logged as NO TRADE:
   - the market is closed or not tradeable;
   - the quote is stale or missing;
@@ -245,10 +245,10 @@ start (exit code 3):
 - `brentnews`: the news collector (`news-check --analyze`). It runs **until stopped**;
   `--minutes N` or `--once` are only for bounded tests. It retries pending classifications
   after a quiet window, budget refusal or failed call (backoff up to 30 min after failures),
-  and sends one `[BRENT OPS]` notice per 30 min if the price monitor stops or stalls.
+  and logs it if the price monitor stops or stalls (no Telegram; see "Problems" below).
 - `brent`: the price monitor (`run`). It watches the news collector's heartbeat and coverage
-  and sends one `[BRENT OPS]` notice per 30 min if the collector stops, goes stale or loses
-  coverage; entry alerts then wait (WATCH).
+  and logs it if the collector stops, goes stale or loses coverage; entry alerts then wait
+  (WATCH).
 
 The OANDA practice token is typed at a hidden prompt when the monitor starts. It is never
 saved or printed. If `OANDA_API_KEY` is already in the environment, the monitor uses it.
@@ -524,3 +524,26 @@ is refused in the quiet window. `prospective` is true only if the answer came be
 
 **One-time test.** `info-test` sends one labelled end-to-end INFO message and refuses a second.
 
+
+
+## Problems: handled quietly (since 2026-11-06)
+
+Irakli asked for no problem spam. Problems are handled automatically and logged; Telegram hears
+about one only when automatic recovery has failed for a long time.
+
+- OANDA reads retry a timeout, dropped connection or HTTP 5xx twice (after 1 s and 3 s) before
+  they count as a failure. A 4xx (bad token) fails at once.
+- The monitor and the news collector never send problem messages. They log `ops` events
+  (at most one per kind per 30 min).
+- The "MONITOR STARTED" card goes out at most once a day; other restarts (deploys, crashes,
+  self-heal) are logged as `start_quiet`.
+- `brent health --notify` (every minute) tracks each problem under a stable key (numbers in the
+  text are ignored) in `health_notices.json`. As root under systemd it also self-heals: after
+  5 min it resets and starts a `failed` unit or restarts an `active` but stuck one (at most
+  once per 15 min per unit; an `inactive` unit was stopped on purpose and is left alone;
+  `--no-heal` turns this off). One Telegram message is sent only when one problem has lasted
+  over 1 hour, once, no reminders, no "recovered" message, at most once a day per problem.
+- The status page has a "Problems handled automatically" section (last 24 h). The nightly
+  check adds `brent_problems_24h` to its log, and the weekly review has an Operations line.
+- Nightly problems (disk, backup age, PC snapshot) are logged; one message only if the same
+  problem is still there the next night.

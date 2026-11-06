@@ -24,6 +24,7 @@ from .store import Store
 
 M15 = timedelta(minutes=15)
 OPS_REPEAT = timedelta(minutes=30)
+START_QUIET = timedelta(hours=24)   # "monitor started" card at most once a day
 RANGE_REPEAT = timedelta(minutes=30)
 ACCOUNT_EVERY = timedelta(minutes=5)
 MARKS = (60, 240)  # directional check-points, minutes after the alert
@@ -174,8 +175,9 @@ class Monitor:
         if last and now - _dt(last) < OPS_REPEAT:
             return
         self.st["ops"][kind] = _iso(now)
+        # Logged only (dashboard, nightly, weekly). The health check retries/restarts and sends
+        # the one rare Telegram notice when a problem outlasts that.
         self.store.write("ops", kind=kind, text=text)
-        self.send(messages.ops_text(text), "ops")
 
     # ----------------------------------------------------------------- startup
     def startup(self, samples: int = 5, sleep: Callable[[float], None] = time.sleep):
@@ -195,8 +197,16 @@ class Monitor:
                 pass
             sleep(1)
         self.save()
-        self.send(messages.start_text(RULES_VERSION, self.cfg.config_hash(), account_line,
-                                      self.manifest["experiment"], self.cfg.alerts_enabled), "start")
+        # A restart (deploy, crash, auto-heal) within START_QUIET of the last card is logged only.
+        last = self.st["ops"].get("start_card_at")
+        if last and now - _dt(last) < START_QUIET:
+            self.store.write("start_quiet", last_card=last)
+        else:
+            ok, _, _ = self.send(messages.start_text(RULES_VERSION, self.cfg.config_hash(), account_line,
+                                                     self.manifest["experiment"], self.cfg.alerts_enabled),
+                                 "start")
+            if ok:
+                self.st["ops"]["start_card_at"] = _iso(now)
         self.save()
         self.save()
 

@@ -267,7 +267,9 @@ def test_monitor_notices_stopped_news_collector(tmp_path):
     sender = Sender(clock)
     mon = Monitor(cfg, FakeClient(clock), Store(cfg.journal_dir), sender, now=clock)  # real news view
     mon.tick()
-    assert any("news collector is not running" in t for t in sender.texts)
+    assert not any("news collector is not running" in t for t in sender.texts)   # logged, not sent
+    assert any(e["event"] == "ops" and "news collector is not running" in e["text"]
+               for e in mon.store.events())
     assert mon.st["news_process"]["running"] is False
     assert alerts(sender) == []   # no news -> WATCH
     del clock_t
@@ -438,3 +440,47 @@ def test_client_connect_retries_timeouts_but_not_bad_tokens(monkeypatch):
     monkeypatch.setattr(client, "ReadOnlyOanda", bad)
     with pytest.raises(client.OandaReadError):
         cli._client(BrentConfig(), sleep=lambda s: None)
+
+
+def test_client_retries_a_read_timeout_then_wraps_it():
+    import requests
+
+    from tradingagents.brent import client
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"accounts": [{"id": "001"}]}
+
+    class Sess:
+        def __init__(self, fails):
+            self.fails, self.headers, self.calls = fails, {}, 0
+
+        def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            if self.calls <= self.fails:
+                raise requests.ReadTimeout("Read timed out. (read timeout=5.0)")
+            return Resp()
+
+    waits = []
+    s = Sess(2)
+    c = client.ReadOnlyOanda("tok", session=s, sleep=waits.append)
+    assert c.account_id == "001" and s.calls == 3 and waits == [1.0, 3.0]
+    with pytest.raises(client.OandaTransientError):
+        client.ReadOnlyOanda("tok", session=Sess(5), sleep=lambda w: None)
+
+
+def test_restart_start_card_is_quiet_within_a_day(tmp_path):
+    from tests.test_brent_alerts import Clock, FakeClient, NewsFake
+
+    clock = Clock()
+    cfg = BrentConfig(journal_dir=str(tmp_path / "brent"), alerts_enabled=True)
+    sender = Sender(clock)
+    for _ in range(3):   # e.g. three deploy restarts in an hour
+        mon = Monitor(cfg, FakeClient(clock), Store(cfg.journal_dir), sender, now=clock,
+                      news_view=NewsFake())
+        mon.startup(samples=1, sleep=lambda s: None)
+        clock.advance(600)
+    assert sum("MONITOR STARTED" in t for t in sender.texts) == 1
+    assert sum(e["event"] == "start_quiet" for e in Store(cfg.journal_dir).events()) == 2

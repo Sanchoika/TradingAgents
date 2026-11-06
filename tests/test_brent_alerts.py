@@ -251,14 +251,16 @@ def test_stale_quote_suppresses_alert(tmp_path):
     assert sup and any("old" in r for r in sup[0]["reasons"])
 
 
-def test_quote_errors_suppress_and_raise_ops_notice_once(tmp_path):
-    mon, client, sender, clock, _ = make(tmp_path)
+def test_quote_errors_suppress_and_log_ops_note_quietly(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
     client.fail_quotes = True
     for _ in range(25):
         mon.tick()
         clock.advance(3)
     ops = [t for t in sender.texts if "<b>BRENT PROBLEM</b>" in t]
-    assert len(ops) == 1 and alerts(sender) == []
+    assert ops == [] and alerts(sender) == []          # no Telegram from the monitor itself
+    logged = [e for e in store.events() if e["event"] == "ops" and e["kind"] == "quote_errors"]
+    assert len(logged) == 1                            # logged once per half hour
 
 
 def test_expiry_and_new_signal_needed(tmp_path):

@@ -91,7 +91,8 @@ def latest(folder: str | Path) -> dict[str, dict]:
     return out
 
 
-def weekly(events: list[dict], fb: dict[str, dict], now: datetime, days: int = 7) -> dict:
+def weekly(events: list[dict], fb: dict[str, dict], now: datetime, days: int = 7,
+           health: dict | None = None) -> dict:
     since = now - timedelta(days=days)
     ev = [e for e in events if e.get("ts") and datetime.fromisoformat(e["ts"]) >= since]
     infos = [e for e in ev if e["event"] == "info"]
@@ -114,8 +115,13 @@ def weekly(events: list[dict], fb: dict[str, dict], now: datetime, days: int = 7
         before = [h for h in heads if timedelta(0) <= t - datetime.fromisoformat(h["ts"]) <= timedelta(hours=2)]
         if not before:
             context.append({"at": m["ts"], "change": m.get("change")})
+    ops = {"monitor_starts": sum(1 for e in ev if e["event"] in ("start", "start_quiet")),
+           "monitor_notes": dict(Counter(e.get("kind", "?") for e in ev if e["event"] == "ops")),
+           "self_heals": sum(1 for e in ev if e["event"] == "self_heal"),
+           "telegram_notices": sum(1 for e in ev if e["event"] == "ops_notice_sent"),
+           "health": health}
     return {
-        "window": f"{since.date()} to {now.date()}", "version": FEEDBACK_VERSION,
+        "window": f"{since.date()} to {now.date()}", "version": FEEDBACK_VERSION, "ops": ops,
         "info": {"sent": sum(1 for e in infos if e.get("sent") and e.get("accepted")),
                  "send_failed": sum(1 for e in infos if e.get("sent") and not e.get("accepted")),
                  "shadow_only": sum(1 for e in infos if e.get("shadow")),
@@ -150,4 +156,14 @@ def weekly_text(w: dict, preview: bool = False) -> str:
              "Direction: not scored (INFO makes no directional call). Small samples; no claim of skill.",
              f"Fast moves with no news INFO in the 2 h before: "
              f"{len(w['retrospective_context']['fast_moves_without_news_info_in_prior_2h'])} (context, not misses)."]
+    o = w.get("ops")
+    if o:
+        notes = ", ".join(f"{k} {v}" for k, v in sorted(o["monitor_notes"].items())) or "none"
+        lines.append(f"Operations (handled quietly): monitor starts {o['monitor_starts']}, "
+                     f"self-heal restarts {o['self_heals']}, monitor problem notes {notes}, "
+                     f"problem messages sent {o['telegram_notices']}.")
+        if o.get("health"):
+            from tradingagents.ops.notices import summary_lines
+
+            lines += summary_lines(o["health"], "Health check: ")
     return "\n".join(lines)

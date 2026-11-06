@@ -23,14 +23,15 @@ def _client(cfg, tries: int = 6, sleep=time.sleep):
     backoff (a single timeout must not end the monitor). A 4xx (bad token) fails at once."""
     import requests
 
-    from .client import OandaReadError, ReadOnlyOanda, token_from_env_or_prompt
+    from .client import OandaReadError, OandaTransientError, ReadOnlyOanda, token_from_env_or_prompt
 
     token = token_from_env_or_prompt()
     for i in range(tries):
         try:
             return ReadOnlyOanda(token)
         except (requests.RequestException, OandaReadError) as exc:
-            transient = isinstance(exc, requests.RequestException) or " -> HTTP 5" in str(exc)
+            transient = isinstance(exc, (requests.RequestException, OandaTransientError)) \
+                or " -> HTTP 5" in str(exc)
             if not transient or i == tries - 1:
                 raise
             wait = min(60, 5 * 2 ** i)
@@ -166,13 +167,19 @@ def cmd_run(args, cfg) -> int:
 
 
 def _pages(cfg, store, state, locked, write_page):
-    from .report import news_health
+    from .report import news_health, problem_lines
 
     nh = news_health(cfg.journal_dir, cfg=cfg)
-    paths = [write_page(state, store.events(), locked, Path(cfg.journal_dir) / "brent.html", news=nh)]
+    events = store.events()
+    try:
+        probs = problem_lines(cfg.journal_dir, events)
+    except Exception as exc:   # the page must still be written
+        probs = [f"problem log unreadable: {type(exc).__name__}"]
+    paths = [write_page(state, events, locked, Path(cfg.journal_dir) / "brent.html", news=nh,
+                        problems=probs)]
     if cfg.site_dir:
-        paths.append(write_page(state, store.events(), locked, Path(cfg.site_dir) / "index.html",
-                                news=nh))
+        paths.append(write_page(state, events, locked, Path(cfg.site_dir) / "index.html",
+                                news=nh, problems=probs))
     return paths
 
 
@@ -241,9 +248,18 @@ def cmd_health(args, cfg) -> int:
     bad = overall_health(store.state(), store.is_locked(), nh, datetime.now(UTC))
     print("OK" if not bad else "DEGRADED: " + "; ".join(bad))
     if args.notify:
-        from tradingagents.ops import notices
+        import shutil
 
-        msgs = notices.step(Path(cfg.journal_dir) / "health_notices.json", bad, datetime.now(UTC))
+        from tradingagents.ops import heal, notices
+
+        state = Path(cfg.journal_dir) / "health_notices.json"
+        # Problems are logged quietly; only one that outlasts retries and restarts (1 h) is sent.
+        msgs = notices.step(state, bad, datetime.now(UTC))
+        if not args.no_heal and shutil.which("systemctl") and hasattr(os, "geteuid") \
+                and os.geteuid() == 0:
+            for line in heal.heal(state, datetime.now(UTC)):
+                print(line)
+                store.write("self_heal", text=line)
         if msgs:
             from .messages import ops_text
 
@@ -369,11 +385,10 @@ class _MonitorWatch:
         try:
             why = self.problem()
             if why and time.monotonic() - self.last_sent > self.REPEAT_S:
+                # Logged only: the health check restarts the monitor and sends the one rare
+                # notice if it stays down (no Telegram from here any more).
                 self.last_sent = time.monotonic()
-                from .messages import ops_text
-
-                _sender(self.cfg)(ops_text(f"{why}. No entry alerts while it is down. "
-                                           "Restart: bash ~/ta-brent/scripts/brent_activate.sh"))
+                print(f"monitor watch: {why}", file=sys.stderr, flush=True)
         except Exception as exc:  # the watch must never stop news collection
             print(f"monitor watch failed: {exc}", file=sys.stderr)
 
@@ -393,7 +408,11 @@ def cmd_weekly(args, cfg) -> int:
 
     store = Store(cfg.journal_dir)
     now = datetime.now(UTC)
-    w = feedback.weekly(store.events(), feedback.latest(cfg.journal_dir), now)
+    from tradingagents.ops import notices
+
+    hp = Path(cfg.journal_dir) / "health_notices.json"
+    health = notices.summary(hp, now, hours=24 * 7) if hp.exists() else None
+    w = feedback.weekly(store.events(), feedback.latest(cfg.journal_dir), now, health=health)
     text = feedback.weekly_text(w, preview=not args.send)
     if args.json:
         print(json.dumps(w, indent=2, default=str))
@@ -504,7 +523,9 @@ def main(argv=None) -> int:
     st.add_argument("--news", action="store_true", help="stop the news collector instead")
     h = sub.add_parser("health", help="exit 0 if healthy; optionally ping an external heartbeat")
     h.add_argument("--notify", action="store_true",
-                   help="send a notice when a problem persists 3 checks, bounded reminders, and recovery")
+                   help="log problems quietly; send one notice only if a problem lasts over 1 h")
+    h.add_argument("--no-heal", action="store_true",
+                   help="do not restart failed or stuck services (self-healing runs as root only)")
     h.add_argument("--ping-file", help="file holding the heartbeat URL (never printed)")
     sub.add_parser("report", help="results in four separate parts")
     sub.add_parser("replay", help="same progression over each experiment version (read-only)")

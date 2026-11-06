@@ -7,7 +7,7 @@ import json
 import shutil
 import sys
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import backup, deploy, nightly, notices
@@ -32,6 +32,15 @@ def _notify(brent_config: str | None, text: str) -> bool:
 
     ok, _ = _sender(load_config(brent_config))(text)
     return ok
+
+
+def _health_state(brent_config: str | None) -> Path | None:
+    if not brent_config:
+        return None
+    from tradingagents.brent.config import load_config
+
+    p = Path(load_config(brent_config).journal_dir).expanduser() / "health_notices.json"
+    return p if p.exists() else None
 
 
 def main(argv=None) -> int:
@@ -77,8 +86,15 @@ def main(argv=None) -> int:
         return 0 if res["ok"] else 1
     if a.cmd == "nightly":
         res = nightly.check(a.backup_dir, a.snapshot, big_files=_sources(a.watch_file))
+        now = datetime.now(UTC)
+        health = _health_state(a.brent_config)
+        if health:   # what the minute-by-minute health check handled quietly in the last day
+            res["brent_problems_24h"] = notices.summary(health, now, hours=24)
+            res["brent_problems_text"] = notices.summary_lines(res["brent_problems_24h"], "Brent ")
         print(json.dumps(res))
-        msgs = notices.step(a.state, res["problems"], datetime.now(UTC), confirm=1)
+        # Nightly problems are logged; only one still there on the next night (20 h+) is sent.
+        msgs = notices.step(a.state, res["problems"], now, confirm=1,
+                            escalate_after=timedelta(hours=20))
         if msgs:
             _notify(a.brent_config, "[OPS NIGHTLY] " + "\n".join(msgs))
         return 1 if res["problems"] else 0
