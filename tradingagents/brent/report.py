@@ -78,7 +78,13 @@ def progression(events: list[dict]) -> dict:
             suppressed.setdefault(e["key"], []).extend(e["reasons"])
     cand = {e["key"]: e for e in events if e["event"] == "candidate" and e.get("key")}
     zone = (set(suppressed) | set(cand)) & detected
-    evidence = set(cand) & detected
+    # Evidence ready = the entry policy's own test: the news view was not "unavailable" when the
+    # setup was assessed. That is not the same as "an article was read". Candidates logged before
+    # the assessment carried the news state are unknown, not ready.
+    def _news_state(e):
+        return ((e.get("assessment") or {}).get("news") or {}).get("state")
+    evidence = {k for k, e in cand.items() if k in detected and _news_state(e) not in (None, "unavailable")}
+    evidence_unknown = {k for k, e in cand.items() if k in detected and _news_state(e) is None}
     combined = {e["setup"]["key"]: e for e in events if e["event"] == "signal"
                 and e.get("arm", "combined") == "combined" and (e.get("setup") or {}).get("key")}
     passed = set(combined) & detected
@@ -94,19 +100,24 @@ def progression(events: list[dict]) -> dict:
             blockers["entry zone never reached (no setup lost)"] += 1
         else:
             blockers["other"] += 1
-    watches = {e["id"] for e in events if e["event"] == "watch_notice"}
+    notices = [e for e in events if e["event"] == "watch_notice"]
+    accepted_watch = [e for e in notices if e.get("accepted")]
     return {"setups_detected": len(detected), "entry_zone_reached": len(zone),
-            "evidence_ready": len(evidence), "entry_checks_passed": len(passed),
+            "evidence_ready": len(evidence), "evidence_ready_unknown": len(evidence_unknown),
+            "entry_checks_passed": len(passed),
             "notification_accepted": len(notified),
             "primary_blocker_of_setups_not_notified": dict(blockers.most_common()),
-            "watch_messages_unique_watches": len(watches),
-            "watch_messages_sent": sum(1 for e in events if e["event"] == "watch_notice"),
+            "watch_messages_unique_watches": len({e["id"] for e in accepted_watch}),
+            "watch_messages_sent": len(accepted_watch),
+            "watch_send_attempts_failed": sum(1 for e in notices if not e.get("accepted")),
             "watch_cancelled": sum(1 for e in events if e["event"] == "watch_end"
                                    and e.get("outcome") in ("invalidated", "expired")),
             "watch_to_entry": sum(1 for e in events if e["event"] == "watch_end"
                                   and e.get("outcome") == "entry"),
             "denominators": "unique setups; 'notification_accepted' = notify command accepted the "
-                            "ENTRY; phone display is not measured; chart-only shadow signals excluded"}
+                            "ENTRY; phone display is not measured; chart-only shadow signals excluded; "
+                            "'evidence_ready' = the news view was usable for the entry policy "
+                            "(not that an article was read); WATCH counts are accepted sends only"}
 
 
 def replay_by_version(events: list[dict]) -> dict:

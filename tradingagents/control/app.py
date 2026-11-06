@@ -41,6 +41,10 @@ class ControlConfig:
     brent_toml: str
     brent_journal: str = "~/.tradingagents/brent"
     demo_journal: str = ""
+    # The PC's read-only dashboard snapshot, synced here after each run (syncguard). Used for the
+    # stock status while the stock test runs on the PC; it is never written by this page.
+    demo_snapshot: str = ""
+    demo_snapshot_stale_hours: float = 26.0
     restart_news_command: str = ""
     audit_path: str = "~/.tradingagents/control/audit.jsonl"
     host: str = "127.0.0.1"
@@ -210,10 +214,17 @@ class ControlApp:
         return "\n".join(lines)
 
     def demo_lines(self) -> list[str]:
-        if not self.cfg.demo_journal:
-            return ["not hosted on this server; its dashboard is on the main page"]
-        d = Path(self.cfg.demo_journal).expanduser()
-        state = json.loads((d / "state.json").read_text(encoding="utf-8")) if (d / "state.json").exists() else {}
+        if self.cfg.demo_journal:
+            return self._journal_lines(Path(self.cfg.demo_journal).expanduser())
+        if self.cfg.demo_snapshot:
+            return snapshot_lines(Path(self.cfg.demo_snapshot).expanduser(), self.cfg.demo_snapshot_stale_hours)
+        return ["not hosted on this server; its dashboard is on the main page"]
+
+    @staticmethod
+    def _journal_lines(d: Path) -> list[str]:
+        if not (d / "state.json").exists():
+            return [f"stock journal not found at {d}: the stock test is not running from this server"]
+        state = json.loads((d / "state.json").read_text(encoding="utf-8"))
         out = [f"last run date in state: {state.get('last_run_date', 'none')}"]
         acct = d / "paper_account.json"
         if acct.exists():
@@ -240,6 +251,47 @@ class ControlApp:
         return _shell(f"<h1>{html.escape(ACTIONS[action])}</h1><p>{html.escape(ack)}</p>"
                       f"<p><b>State read back:</b> {html.escape(state)}</p>"
                       "<p><a href=/>Back to status</a></p>")
+
+
+def snapshot_lines(path: Path, stale_hours: float = 26.0, now: datetime | None = None) -> list[str]:
+    """Stock status from the PC's synced read-only snapshot (data.json). Says how old it is and
+    marks it stale; a missing or unreadable file is reported as such, never as 'no runs'."""
+    if not path.exists():
+        return [f"stock snapshot not found at {path}: the PC has not synced one yet"]
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"stock snapshot unreadable: {type(exc).__name__}"]
+    now = now or datetime.now(UTC)
+    built = d.get("built_at")
+    try:
+        age_h = (now - datetime.fromisoformat(built)).total_seconds() / 3600
+    except (TypeError, ValueError):
+        age_h = None
+    head = f"snapshot from the PC, built {built or 'unknown'}"
+    if age_h is None or age_h > stale_hours:
+        head += f"  STALE: older than {stale_hours:g} h or undated; figures below may be out of date"
+    elif age_h is not None:
+        head += f" ({age_h:.1f} h ago)"
+    out = [head]
+    runs = [r for r in d.get("runs") or [] if not r.get("dry_run")]
+    if runs:
+        last = runs[-1]
+        end = last.get("end")
+        fin = (f"finished {end.get('status')}: {end.get('completed')}/{end.get('attempted')} analyses "
+               f"completed, {end.get('errored')} errored" if end else "no finish recorded")
+        out.append(f"last run {last.get('trade_date')}: {fin}")
+    else:
+        out.append("no real run in the snapshot")
+    acct = d.get("account")
+    if acct:
+        pos = acct.get("positions") or []
+        exit_pending = sum(1 for p in pos if p.get("exit_requested_on"))
+        pending = sum(1 for p in pos if p.get("status") == "pending")
+        opened = sum(1 for p in pos if p.get("status") == "open" and not p.get("exit_requested_on"))
+        out.append(f"paper positions: pending {pending}, open {opened}, exit pending {exit_pending}, "
+                   f"closed {len(acct.get('closed') or [])} (pending orders are not fills)")
+    return out
 
 
 def _shell(body: str) -> str:

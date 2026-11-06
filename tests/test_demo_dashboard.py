@@ -110,7 +110,8 @@ def test_snapshot_reads_saved_files_and_never_changes_them(tmp_path):
     # equity at the last run (101,000) minus cash at that time (100,000 + 250 - 1.5)
     assert acct["unrealized_last_run"] == pytest.approx(751.5)
     assert snap["extras"]["score"]["trades"] == 1
-    assert snap["completion"]["recorded"] is False
+    assert snap["completion"]["recorded"] is True
+    assert all("end" not in r for r in snap["runs"])          # these runs wrote no finish row
 
 
 def test_page_escapes_text_hides_paths_and_secrets(tmp_path):
@@ -120,7 +121,7 @@ def test_page_escapes_text_hides_paths_and_secrets(tmp_path):
     assert "<script>alert(1)</script>" not in page
     assert "SECRET-CMD" not in page and "notify_command" not in page
     assert str(tmp_path) not in json.dumps(publishable(snap))              # local paths stay on the PC
-    assert "PAPER MODE" in page and "completion not recorded" in page.lower()
+    assert "PAPER MODE" in page and "no finish recorded" in page.lower()
 
 
 def test_site_folder_copies_reports_and_works_offline(tmp_path):
@@ -155,3 +156,14 @@ def test_price_failure_is_unavailable_not_zero(tmp_path):
     snap = build_snapshot(_cfg(tmp_path), bars=broken, schedule=False, now=NOW)
     assert all("error" in p["mark"] for p in snap["account"]["positions"])
     assert snap["extras"]["prices"]["ok"] == 0
+
+
+def test_snapshot_carries_each_run_finish_status(tmp_path):
+    _setup(tmp_path)
+    with (tmp_path / "journal.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": "2026-11-05T13:20:00+00:00", "event": "run_end", "trade_date": "2026-11-05",
+                             "dry_run": False, "status": "partial", "ok": False, "attempted": 3,
+                             "completed": 2, "errored": 1, "fallback": 0, "lookup_errors": 0}) + "\n")
+    snap = build_snapshot(_cfg(tmp_path), bars=_bars, schedule=False, now=NOW)
+    last = [r for r in snap["runs"] if not r["dry_run"]][-1]
+    assert last["end"]["status"] == "partial" and last["end"]["errored"] == 1

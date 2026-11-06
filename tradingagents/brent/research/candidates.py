@@ -77,7 +77,8 @@ def fill_trade(d: pd.DataFrame, ie: int, s: int, stop: float, t_exit: pd.Timesta
     if k > 0:
         R = R * FX_WIN if R > 0 else R * FX_LOSS
     return {"date": idx[ie].date(), "side": s, "r": R, "exit": how, "r_dist": r1, "entry_ts": idx[ie],
-            "spread_r": 2 * hso[ie] / r1, "held_min": held, "ie": ie, "stop": stop}, None
+            "spread_r": 2 * hso[ie] / r1, "held_min": held, "ie": ie, "stop": stop,
+            "t_exit_planned": t_exit}, None
 
 
 # ----------------------------------------------------------------- prereg-22: London range break + retest
@@ -220,7 +221,12 @@ def run_trend(d: pd.DataFrame, days: set[date] | None = None, k: float = 1.0):
 
 
 # ----------------------------------------------------------------------------- evaluation
-def block_boot_ci(x: np.ndarray, block: int = 20, n: int = 10_000, alpha: float = 0.025, seed: int = 22):
+# Preregs 22/23 specify a 97.5% interval (alpha 0.05/2 for the two-candidate family), i.e. 1.25% in
+# each tail. Until 2026-11-06 this used 2.5% per tail (a 95% interval); see the ledger correction.
+CI_TAIL = 0.0125
+
+
+def block_boot_ci(x: np.ndarray, block: int = 20, n: int = 10_000, alpha: float = CI_TAIL, seed: int = 22):
     if len(x) < 2:
         return (float("nan"), float("nan"))
     rng = np.random.default_rng(seed)
@@ -289,15 +295,16 @@ def evaluate(d: pd.DataFrame) -> dict:
 
 
 def _controls(d: pd.DataFrame, base: pd.DataFrame, kind: str):
-    """Random-direction p95 and always-long mean on the same entry bars, same stop distance and exit."""
+    """Random-direction p95 and always-long mean on the same entry bars and stop distance. Each
+    control direction runs its OWN stop to the strategy's SCHEDULED exit time; it does not inherit
+    the hold the strategy's stop produced (which would make the control depend on the strategy)."""
     if not len(base):
         return None, None
     both = []
     for tr in base.itertuples():
         row = {}
         for s in (1, -1):
-            t_exit = d.index[min(tr.ie + int(tr.held_min), len(d) - 1)]
-            x, _ = fill_trade(d, tr.ie, s, tr.stop, t_exit, 1.0, r_override=tr.r_dist)
+            x, _ = fill_trade(d, tr.ie, s, tr.stop, tr.t_exit_planned, 1.0, r_override=tr.r_dist)
             row[s] = x["r"] if x else np.nan
         both.append(row)
     t = pd.DataFrame(both)

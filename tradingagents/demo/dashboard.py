@@ -263,10 +263,14 @@ function staleInfo(){const runs=realRuns();const last=runs[runs.length-1];const 
  else if(exp&&last.trade_date<exp)out.push(["warn",`No run recorded for ${fmtD.format(new Date(exp+"T12:00:00Z"))} (expected weekdays 08:00 ET; holidays not known). Last run: ${fmtD.format(new Date(last.trade_date+"T12:00:00Z"))}.`]);
  if(ageH>26)out.push(["warn",`This snapshot was built ${ago(D.built_at)}. It is rebuilt after each run, so it may be out of date.`]);
  return out}
+function endText(r){const e=r&&r.end;if(!e)return "<b>no finish recorded</b> (still running, crashed, or a run from before finish records)";
+ const cls=e.status==="success"?"pos":(e.status==="failed"?"neg":"warn");
+ const n=e.attempted!=null?`; ${e.completed} of ${e.attempted} analyses completed, ${e.errored} errored, ${e.fallback||0} without a rating, ${e.lookup_errors||0} lookups failed`:"";
+ return `finished ${t(e.ts)}: <span class="${cls}">${esc(e.status)}</span>${esc(n)}`}
 function statusSentence(){const runs=realRuns();const last=runs[runs.length-1];const A=D.account;const n=(A&&A.closed||[]).length;
  const open=(A&&A.positions||[]);const s=[];
  if(!last)return "The test is set up but has no recorded run yet. Nothing has been traded.";
- s.push(`The last run started ${fmtF.format(new Date(last.started))} ET for ${fmtD.format(new Date(last.trade_date+"T12:00:00Z"))}; completion is not recorded.`);
+ s.push(`The last run started ${fmtF.format(new Date(last.started))} ET for ${fmtD.format(new Date(last.trade_date+"T12:00:00Z"))}; ${last.end?`it finished: ${last.end.status}`:"no finish is recorded"}.`);
  const c=last.counts||{};const scan=last.scan;
  if(scan)s.push(scan.reported.length?`${scan.reported.length} watched compan${scan.reported.length>1?"ies":"y"} had reported earnings; ${c.decisions||0} analysed.`:"No watched company had reported earnings, so nothing was analysed.");
  if(c.errors)s.push(`${c.errors} error${c.errors>1?"s":""} recorded in that run.`);
@@ -396,7 +400,7 @@ function performance(){const A=D.account,runs=realRuns(),E=D.extras||{},S=E.scor
  if(!R)rH=NA("not computed (prices off)");else if(R.error)rH=NA("failed: "+R.error);else if(!R.scored)rH=`<p class="faint">No rating has finished its ${esc(cfg.hold_days)}-day window yet${R.pending?` (${R.pending} pending)`:""}.</p>`;
  else rH=`${table(["Rating","Ratings","Mean move"],Object.entries(R.by_rating).map(([r,v])=>`<tr><td><span class="chip r-${esc(r)}">${esc(r)}</span></td><td>${v.n}</td><td class="${cls(v.mean_move_pct)}">${num(v.mean_move_pct,2)}%</td></tr>`),"")}
   ${R.directional?`<p style="margin:10px 0 0">Direction right ${num(100*R.directional.hit_rate,0)}% of ${R.directional.n} directional calls ${prov}${R.pending?` · ${R.pending} still in their window`:""}</p>`:""}
-  ${ER&&!ER.error&&ER.scored?`<p style="margin:10px 0 0">Early read, market move removed: <b>${esc(ER.call)}</b> · ${ER.scored} ratings over ${ER.days} days · mean ${num(ER.mean_excess_pct,2)}% vs ${esc(ER.benchmark)} ${tip("Each directional rating scores direction x (stock move minus SPY move) over the hold window. Calls are fixed in advance at 20, 50, 100 and 150 ratings: stop if clearly worse than no skill, promising if clearly better. Not the final verdict.")}</p>`:""}`;
+  ${ER&&!ER.error&&ER.scored?`<p style="margin:10px 0 0">Early read, market move removed: <b>${esc(ER.call)}</b> · ${ER.scored} ratings over ${ER.days} days · mean ${num(ER.mean_excess_pct,2)}% vs ${esc(ER.benchmark)} ${tip("Each directional rating scores direction x (stock move minus SPY move) over the hold window. Checkpoints at 20, 50, 100 and 150 ratings. UNVALIDATED: the statistic treats overlapping 5-day windows as independent, so it overstates certainty. A reason to review at most, not the final verdict.")}</p>`:""}`;
  const lastB=bS.length?bS[bS.length-1][1]:null,lastA=eqS.length?eqS[eqS.length-1][1]:null;
  return `${banners()}<div class="banner info">Everything below is ${n<TARGET?"<b>provisional</b>: fewer than "+TARGET+" closed trades is not evidence of profitability.":"based on "+n+" closed trades."}</div>
  <div class="grid g2"><div class="card"><h2>Equity vs ${esc(cfg.benchmark||"benchmark")} ${tip("Account: equity at each run start relative to the start. Benchmark: buy-and-hold of "+(cfg.benchmark||"SPY")+" over the same period, recorded by the runner.")}</h2>
@@ -425,7 +429,7 @@ function activity(){const S=D.sources||{},sch=D.schedule;const acts=(D.activity|
  const retry=Object.keys(D.retry_queue||{});
  const last=realRuns().slice(-1)[0];
  return `${banners()}<div class="grid g2"><div class="card"><h2>System status ${tip("Facts the dashboard can check. It never calls the system healthy just because a run started.")}</h2><dl class="kv">
- <dt>Last run</dt><dd>${last?`started ${t(last.started)}; <b>completion not recorded</b>; last row from that run ${t(last.last_event)}`:NA("none yet")}</dd>
+ <dt>Last run</dt><dd>${last?`started ${t(last.started)}; ${endText(last)}; last row from that run ${t(last.last_event)}`:NA("none yet")}</dd>
  <dt>Errors in last run</dt><dd>${last?(last.counts.errors?`<span class="neg">${last.counts.errors}</span>`:"0 recorded"):"—"}</dd>
  <dt>Missed weekdays</dt><dd>${last?(last.missed_runs?`<span class="warn">${last.missed_runs} before the last run</span>`:"none recorded"):"—"}</dd>
  <dt>Retry queue</dt><dd>${retry.length?esc(retry.join(", ")):"empty"}</dd>

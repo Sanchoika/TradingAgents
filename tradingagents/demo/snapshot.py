@@ -160,6 +160,10 @@ def build_snapshot(cfg, *, prices: bool = True, schedule: bool = True, bars=None
         if current is None:
             continue
         c = current["counts"]
+        if ev == "run_end":
+            current["end"] = {"ts": ts, "status": e.get("status") or ("success" if e.get("ok") else "failed"),
+                              **{k: e.get(k) for k in ("attempted", "completed", "errored", "fallback",
+                                                        "lookup_errors")}}
         if ev == "decision":
             c["decisions"] += 1
             if not dry:
@@ -319,6 +323,7 @@ def build_snapshot(cfg, *, prices: bool = True, schedule: bool = True, bars=None
         "schedule": {"checked": now.isoformat(timespec="seconds"), "tasks": _scheduled_tasks()} if schedule else None,
         "notifications": {"recorded": False,
                           "note": "Telegram send results are not written to the journal; see demo.log on the PC."},
-        "completion": {"recorded": False,
-                       "note": "The runner records when a run starts, not when it finishes."},
+        "completion": {"recorded": True,
+                       "note": "Runs record a finish row (run_end) with a status since 2026-11-05; "
+                               "a run without one is still running, crashed, or older."},
     }

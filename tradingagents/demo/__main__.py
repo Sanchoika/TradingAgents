@@ -184,8 +184,10 @@ def cmd_watchdog(args, cfg) -> int:
     if day is not None:
         text = f"TradingAgents demo: NO RUN recorded for {day}. Is the PC on and logged in? See demo.log."
     else:
-        text = (f"TradingAgents demo: the {bad['trade_date']} run FINISHED WITH ERRORS: "
-                f"{bad.get('analysis_errors', '?')} of {bad.get('analyses', '?')} analyses failed, "
+        word = "FAILED" if bad.get("status") == "failed" else "PARTLY FAILED"
+        text = (f"TradingAgents demo: the {bad['trade_date']} run {word}: "
+                f"{bad.get('completed', '?')} of {bad.get('attempted', '?')} analyses completed, "
+                f"{bad.get('errored', '?')} errored, {bad.get('fallback', 0)} without a rating, "
                 f"{bad.get('lookup_errors', 0)} earnings lookups failed. See demo.log.")
     print(text)
     if cfg.notify_command:

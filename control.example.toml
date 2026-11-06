@@ -3,7 +3,8 @@
 allowed_users = ["you@example.com"]        # your Tailscale login; nobody else can use it
 brent_toml = "/root/ta-brent/brent.toml"
 brent_journal = "~/.tradingagents/brent"
-# demo_journal = ""                        # set once the stock runner is hosted here
+# demo_journal = ""                        # set once the stock runner is hosted here (after "cut over")
+demo_snapshot = "/root/ta-dashboard/data.json"   # the PC's synced read-only dashboard snapshot
 restart_news_command = "systemctl restart brent-news"   # the only command this page can run
 audit_path = "~/.tradingagents/control/audit.jsonl"
 port = 8787

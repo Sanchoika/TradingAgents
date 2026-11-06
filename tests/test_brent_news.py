@@ -465,3 +465,74 @@ def test_quiet_window_shadow_logs_reserved_capacity_but_never_calls(tmp_path):
     use = news.budget_usage(tmp_path, clock.t, 6, 250, ("07:30", "10:30"))
     assert use["quiet_shadow_24h"]["would_call"] == 1 and use["quiet_shadow_24h"]["urgent_items"] == 1
     assert not [e for e in events(col) if e["event"] == "call_started"]
+
+
+def test_denial_of_a_similar_story_is_material_not_a_repeat(tmp_path):
+    # audit finding 1: headline similarity is event membership, not a repeat veto
+    col, clock = make(tmp_path, google_text=rss(("Saudi Arabia plans to raise oil output - Reuters",
+                                                 "Tue, 03 Nov 2026 18:50:00 GMT")))
+    col.poll()
+    clock.t += timedelta(hours=3)
+    col.get = lambda url: Resp(rss(("Saudi Arabia denies plans to raise oil output - Reuters",
+                                    "Tue, 03 Nov 2026 21:50:00 GMT"), base="d")) \
+        if "google" in url else Resp("x")
+    col.poll()
+    items = [e for e in events(col) if e["event"] == "item" and e["feed"].startswith("google")]
+    first, denial = items[0], items[-1]
+    assert denial["repeat_of"] == first["key"]          # same event cluster
+    seen = []
+
+    def model(system, user):
+        seen.append(user)
+        keys = [i["key"] for i in json.loads(user.split("\n")[1])]
+        return json.dumps([{**GOOD, "key": k, "bias": "bearish", "update_of_older_story": True,
+                            "relation": "denial"} for k in keys]), {}
+
+    res = analyze(col, model, Budget())
+    assert "Saudi Arabia plans to raise oil output" in seen[0]   # the model sees the earlier headline
+    c = next(c for c in res["parsed"] if c["key"] == denial["key"])
+    assert news.is_material(c, denial, clock.t, 6) and news.changes_event(c, denial)
+    # an identical re-post (relation "repeat") is still not material
+    assert not news.is_material({**c, "relation": "repeat"}, denial, clock.t, 6)
+    # old classifications without "relation" keep the old rule
+    legacy = {k: v for k, v in c.items() if k != "relation"}
+    assert not news.is_material(legacy, denial, clock.t, 6)
+
+
+def test_relation_value_is_checked():
+    assert validate(json.dumps([{**GOOD, "key": "a", "relation": "correction"}]), {"a"})
+    with pytest.raises(ValueError):
+        validate(json.dumps([{**GOOD, "key": "a", "relation": "debunked"}]), {"a"})
+
+
+def test_batch_ranks_whole_backlog_and_reads_summary():
+    # audit finding 3: urgency is judged on headline AND summary, before the batch is cut
+    def item(n, title="Oil traders watch the dollar", summary=""):
+        return {"key": f"k{n}", "title": title, "summary": summary,
+                "first_seen": (T0 + timedelta(minutes=n)).isoformat()}
+
+    routine = [item(n) for n in range(25)]
+    urgent = item(30, title="Markets update", summary="A drone struck a Saudi refinery overnight")
+    assert news.is_urgent(urgent)
+    batch = news.select_batch(routine + [urgent], 20)
+    keys = [i["key"] for i in batch]
+    assert "k30" in keys and len(batch) == 20
+    assert keys == sorted(keys, key=lambda k: int(k[1:]))        # oldest first within the batch
+    # a flood of urgent items cannot starve routine news: the oldest routine items keep a share
+    flood = [item(100 + n, title="Tanker attacked") for n in range(30)]
+    batch = news.select_batch(routine + flood, 20)
+    assert sum(not news.is_urgent(i) for i in batch) == 5 and batch[0]["key"] == "k0"
+
+
+def test_evidence_summary_separates_what_was_read(tmp_path):
+    from tradingagents.brent.news import evidence_summary
+
+    ev = [{"event": "item", "key": "a", "feed": "google:brent", "link": "https://news.google.com/x"},
+          {"event": "item", "key": "b", "feed": "google:brent", "link": "https://reuters.com/y"},
+          {"event": "item", "key": "c", "feed": "eia:summary", "link": "https://ir.eia.gov/z"},
+          {"event": "item", "key": "d", "feed": "google:opec", "link": "https://news.google.com/w"},
+          {"event": "evidence", "key": "a", "status": "redirect_unresolved", "link_host": "news.google.com"},
+          {"event": "evidence", "key": "b", "status": "full_text", "link_host": "reuters.com"}]
+    s = evidence_summary(ev)
+    assert (s["full_text"], s["official_structured"], s["redirect_unresolved"], s["not_attempted"]) == (1, 1, 1, 1)
+    assert s["not_read_by_host"] == {"news.google.com": 1}
