@@ -373,6 +373,56 @@ def cmd_news_report(args, cfg) -> int:
     return 0
 
 
+def cmd_weekly(args, cfg) -> int:
+    """Weekly review from the journals. --send delivers it (scheduled Sunday run)."""
+    from datetime import UTC, datetime
+
+    from . import feedback
+
+    store = Store(cfg.journal_dir)
+    now = datetime.now(UTC)
+    w = feedback.weekly(store.events(), feedback.latest(cfg.journal_dir), now)
+    text = feedback.weekly_text(w, preview=not args.send)
+    if args.json:
+        print(json.dumps(w, indent=2, default=str))
+    print(text)
+    if args.send:
+        ok, secs = _sender(cfg)(text)
+        store.write("weekly_sent", accepted=ok, window=w["window"], seconds=round(secs, 2))
+        return 0 if ok else 1
+    return 0
+
+
+def cmd_info_test(args, cfg) -> int:
+    """ONE clearly labelled end-to-end INFO test to the configured chat. Refuses a second one."""
+    from datetime import UTC, datetime
+
+    store = Store(cfg.journal_dir)
+    if any(e["event"] == "info_test" for e in store.events()):
+        print("an INFO test was already sent; not sending another", file=sys.stderr)
+        return 3
+    now = datetime.now(UTC)
+    text = ("[BRENT INFO] TEST | END-TO-END CHECK | INFORMATION ONLY | no trade suggested\n"
+            "This is a one-time test of the new Brent information messages (briefs, news, levels, "
+            "fast moves). Nothing is traded and no order is placed.\n"
+            f"Sent {now:%Y-%m-%d %H:%M} UTC. Phone display is not measured unless you confirm it.")
+    ok, secs = _sender(cfg)(text)
+    store.write("info_test", accepted=ok, seconds=round(secs, 2), text=text)
+    print(f"accepted by the notify command: {ok}")
+    return 0 if ok else 1
+
+
+def cmd_second_opinion(args, cfg) -> int:
+    """One bounded second-opinion call on a recorded ENTRY (logged only, never sent)."""
+    from . import news, secondopinion
+
+    budget = news.Budget(cfg.llm_per_hour, cfg.llm_per_day, tuple(cfg.llm_quiet_et))
+    model = news.default_model(cfg.llm_provider, cfg.llm_model)
+    row = secondopinion.review(Store(cfg.journal_dir), args.id, model, budget, cfg.journal_dir)
+    print(json.dumps(row, indent=2))
+    return 0 if row.get("verdict") else 1
+
+
 def cmd_news_events(args, cfg) -> int:
     from pathlib import Path
 
@@ -411,6 +461,12 @@ def main(argv=None) -> int:
     m.add_argument("--units", type=float)
     m.add_argument("--result", type=float, help="realised P&L in account currency, if closed")
     m.add_argument("--note", default="")
+    wk = sub.add_parser("weekly", help="weekly review (preview by default; --send delivers it)")
+    wk.add_argument("--send", action="store_true")
+    wk.add_argument("--json", action="store_true")
+    sub.add_parser("info-test", help="send ONE labelled end-to-end INFO test message")
+    so = sub.add_parser("second-opinion", help="one bounded model review of an ENTRY (logged only)")
+    so.add_argument("id")
     n = sub.add_parser("news-check", help="news collector (+ --analyze): runs until stopped")
     n.add_argument("--once", action="store_true", help="one poll, then exit (test)")
     n.add_argument("--minutes", type=float, default=0.0,
@@ -428,7 +484,8 @@ def main(argv=None) -> int:
                 "status": cmd_status, "health": cmd_health, "replay": cmd_replay, "stop": cmd_stop, "report": cmd_report,
                 "dashboard": cmd_dashboard, "manual": cmd_manual,
                 "news-check": cmd_news_check, "news-report": cmd_news_report,
-                "news-events": cmd_news_events}[args.cmd](args, cfg)
+                "news-events": cmd_news_events, "weekly": cmd_weekly,
+                "info-test": cmd_info_test, "second-opinion": cmd_second_opinion}[args.cmd](args, cfg)
     except (OandaReadError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

@@ -116,14 +116,15 @@ def test_fetch_errors_logged_and_health(tmp_path):
     assert sum(e["event"] == "fetch_error" for e in ev) == 4
     h = col.feed_health()
     # EIA files polled fine, but they are official data, not a news check (audit finding 3)
-    assert h["fresh_feeds"] == ["eia:summary", "eia:table1"] and not h["fresh_check"]
-    assert h["general_news_fresh"] == 0
+    # one direct publisher feed alone is not enough general-news coverage
+    assert h["fresh_feeds"] == ["direct:oilprice", "eia:summary", "eia:table1"] and not h["fresh_check"]
+    assert h["general_news_fresh"] == 1
 
 
 def test_general_news_coverage_needs_two_news_feeds(tmp_path):
     col, clock = make(tmp_path)
     col.poll()
-    assert col.feed_health()["fresh_check"] and col.feed_health()["general_news_fresh"] == 4
+    assert col.feed_health()["fresh_check"] and col.feed_health()["general_news_fresh"] == 5
     clock.t += timedelta(minutes=11)
     assert not col.feed_health()["fresh_check"]
 
@@ -144,8 +145,11 @@ GOOD = {"category": "supply_geopolitics", "status": "credible_report", "event_ti
 def test_validate():
     ok = validate(json.dumps([{**GOOD, "key": "a"}]), {"a"})
     assert ok[0]["bias"] == "bullish"
-    with pytest.raises(ValueError):
-        validate(json.dumps([{**GOOD, "key": "a", "bias": "very bullish"}]), {"a"})
+    # one out-of-range value (seen live: category "opinion") no longer fails the whole batch
+    two = validate(json.dumps([{**GOOD, "key": "a", "category": "opinion"}, {**GOOD, "key": "b"}]), {"a", "b"})
+    bad, good = two
+    assert bad["invalid_output"].startswith("category='opinion'") and not bad["relevant"]
+    assert good["bias"] == "bullish" and "invalid_output" not in good
     with pytest.raises(ValueError):
         validate(json.dumps([{**GOOD, "key": "a"}]), {"a", "b"})  # missing item
     with pytest.raises(ValueError):
@@ -501,8 +505,7 @@ def test_denial_of_a_similar_story_is_material_not_a_repeat(tmp_path):
 
 def test_relation_value_is_checked():
     assert validate(json.dumps([{**GOOD, "key": "a", "relation": "correction"}]), {"a"})
-    with pytest.raises(ValueError):
-        validate(json.dumps([{**GOOD, "key": "a", "relation": "debunked"}]), {"a"})
+    assert validate(json.dumps([{**GOOD, "key": "a", "relation": "debunked"}]), {"a"})[0]["invalid_output"]
 
 
 def test_batch_ranks_whole_backlog_and_reads_summary():
@@ -536,3 +539,14 @@ def test_evidence_summary_separates_what_was_read(tmp_path):
     s = evidence_summary(ev)
     assert (s["full_text"], s["official_structured"], s["redirect_unresolved"], s["not_attempted"]) == (1, 1, 1, 1)
     assert s["not_read_by_host"] == {"news.google.com": 1}
+
+
+def test_direct_publisher_feed_keeps_article_links_and_skips_old_items():
+    from tradingagents.brent.news import fetch_direct
+
+    body = rss(("Oil jumps on supply fears", "Tue, 03 Nov 2026 18:50:00 GMT"),
+               ("Old story", "Fri, 30 Oct 2026 10:00:00 GMT"))
+    items = fetch_direct(lambda url: Resp(body), "direct:oilprice", "https://oilprice.com/rss/main",
+                         "OilPrice.com", now=T0)
+    assert [i.title for i in items] == ["Oil jumps on supply fears"]
+    assert items[0].link.startswith("https://ex.com/") and items[0].feed == "direct:oilprice"

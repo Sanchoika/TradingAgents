@@ -138,6 +138,8 @@ class ControlApp:
             return 403, "text/plain", "Forbidden"
         if method == "GET" and path.split("?")[0] == "/":
             return 200, "text/html; charset=utf-8", self.page(user)
+        if method == "GET" and path.split("?")[0] == "/feedback":
+            return 200, "text/html; charset=utf-8", self.feedback_page(user)
         if method == "POST" and path == "/act":
             return self.act(user, parse_qs(body))
         return 404, "text/plain", "Not found"
@@ -146,6 +148,8 @@ class ControlApp:
     def act(self, user: str, form: dict[str, list[str]]):
         action = (form.get("action") or [""])[0]
         nonce = (form.get("nonce") or [""])[0]
+        if action == "feedback":
+            return self.act_feedback(user, form, nonce)
         if action not in ACTIONS:
             self.audit(user, action or "-", "refused: not an allowed action")
             return 400, "text/plain", "Unknown action"
@@ -160,6 +164,57 @@ class ControlApp:
             ack, state, result = f"failed: {type(exc).__name__}: {str(exc)[:200]}", "unchanged or unknown", "failed"
         self.audit(user, action, result, ack=ack, state=state)
         return 200, "text/html; charset=utf-8", self.result_page(action, ack, state)
+
+    def act_feedback(self, user: str, form: dict[str, list[str]], nonce: str):
+        """Record one feedback answer. A record only: it cannot place or change anything."""
+        from tradingagents.brent import feedback
+
+        mid, kind, value = ((form.get(k) or [""])[0] for k in ("id", "kind", "value"))
+        bad = self.consume(nonce, user, f"feedback:{mid}")
+        if bad:
+            self.audit(user, "feedback", f"refused: {bad}", id=mid)
+            return (409 if "replayed" in bad else 403), "text/plain", f"Refused: {bad}"
+        try:
+            feedback.record(Path(self.cfg.brent_journal).expanduser(), user, mid, kind, value,
+                            datetime.now(UTC))
+            ack, result = f"Recorded: {feedback.VALUES.get(value) or feedback.ENTRY_VALUES[value]} for {mid}.", "done"
+        except (ValueError, OSError) as exc:
+            ack, result = f"not recorded: {exc}", "failed"
+        self.audit(user, "feedback", result, id=mid, value=value)
+        return 200, "text/html; charset=utf-8", _shell(
+            f"<h1>Feedback</h1><p>{html.escape(ack)}</p><p class=note>A later answer replaces this one; "
+            "the history is kept. Feedback never places or changes an order.</p>"
+            "<p><a href=/feedback>Back to messages</a></p>")
+
+    def feedback_page(self, user: str) -> str:
+        from datetime import timedelta
+
+        from tradingagents.brent import feedback
+        from tradingagents.brent.store import Store
+
+        folder = Path(self.cfg.brent_journal).expanduser()
+        msgs = feedback.sent_messages(Store(folder).events(), datetime.now(UTC) - timedelta(days=3))
+        last = feedback.latest(folder)
+        rows = []
+        for m in reversed(msgs[-40:]):
+            choices = {**feedback.VALUES, **(feedback.ENTRY_VALUES if m["kind"] == "ENTRY" else {})}
+            n = self.issue(user, f"feedback:{m['id']}")
+            buttons = "".join(
+                f"<form method=post action=/act style='display:inline'><input type=hidden name=action value=feedback>"
+                f"<input type=hidden name=id value={html.escape(m['id'])}><input type=hidden name=kind "
+                f"value='{html.escape(m['kind'])}'><input type=hidden name=value value={v}>"
+                f"<input type=hidden name=nonce value={n}><button type=submit>{html.escape(label)}</button></form>"
+                for v, label in choices.items())
+            got = [r["value"] for k, r in last.items() if k.startswith(m["id"] + "|")]
+            rows.append(f"<div class=msg><b>{html.escape(m['id'])}</b> {html.escape(m['kind'])} "
+                        f"{html.escape(m['ts'][:16])}<br>{html.escape(m['summary'])}<br>"
+                        f"<span class=note>your answer: {html.escape(', '.join(got) or 'none yet')}</span><br>"
+                        f"{buttons}</div>")
+        return _shell("<h1>Rate recent messages</h1><p class=note>Last 3 days of messages that were accepted "
+                      "for delivery. One tap records an answer; no answer is not counted as negative. "
+                      "Nothing here places, changes or cancels an order.</p>"
+                      + ("".join(rows) or "<p>No messages in the last 3 days.</p>")
+                      + "<p><a href=/>Back to status</a></p>")
 
     def do_brent_pause(self):
         v = set_alerts_enabled(self.cfg.brent_toml, False)
@@ -243,6 +298,7 @@ class ControlApp:
         body = (f"<h1>Trading control</h1><p class=note>Signed in as {html.escape(user)}. Viewing or "
                 "refreshing this page does nothing. Actions are logged. A button press is not proof "
                 f"it worked: read the state after.</p><h2>Actions</h2>{buttons}{dis}"
+                f"<p><a href=/feedback>Rate recent Brent messages</a></p>"
                 f"<h2>Status</h2><pre>{html.escape(self.status_text())}</pre>"
                 "<p class=note>Phone display of Telegram messages is not measured.</p>")
         return _shell(body)

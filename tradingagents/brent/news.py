@@ -77,7 +77,7 @@ def eia_prerelease(feed: str, exc: Exception, now: datetime) -> bool:
 def source_function(feed: str) -> str:
     if feed.startswith("eia:"):
         return "official_data"
-    if feed.startswith(("google:", "yahoo")):
+    if feed.startswith(("google:", "yahoo", "direct:")):
         return "general_news"
     return "other"
 
@@ -101,6 +101,13 @@ GOOGLE_QUERIES = {
     "google:supply": "oil supply disruption",
     "google:opec-official": "site:opec.org",
 }
+# Publisher feeds whose item links go straight to the article (no aggregator redirect), so the
+# article can be read when the page is public. Checked from the server 2026-11-06: oilprice.com
+# answers 200 with RSS; rigzone and S&P Global refuse automated access (403) and are not used.
+DIRECT_FEEDS = {
+    "direct:oilprice": ("https://oilprice.com/rss/main", "OilPrice.com"),
+}
+DIRECT_MAX_AGE = timedelta(days=2)
 EIA_FILES = {
     "eia:summary": "https://ir.eia.gov/wpsr/summary.txt",
     "eia:table1": "https://ir.eia.gov/wpsr/table1.csv",
@@ -168,6 +175,21 @@ def fetch_google(get, feed: str, query: str) -> list[Item]:
     r = get(url)
     r.raise_for_status()
     return parse_rss(r.text, feed)
+
+
+def fetch_direct(get, feed: str, url: str, publisher: str, now: datetime | None = None) -> list[Item]:
+    """A publisher's own RSS feed: links are the publisher's article pages. Items older than
+    DIRECT_MAX_AGE (by publish time) are skipped, like Google's when:2d window."""
+    r = get(url)
+    r.raise_for_status()
+    now = now or datetime.now(UTC)
+    out = []
+    for it in parse_rss(r.text, feed):
+        if it.published and now - datetime.fromisoformat(it.published) > DIRECT_MAX_AGE:
+            continue
+        it.publisher = it.publisher or publisher
+        out.append(it)
+    return out
 
 
 def fetch_yahoo(_get) -> list[Item]:
@@ -238,6 +260,8 @@ class NewsCollector:
 
     def sources(self) -> list[tuple[str, Callable[[], list[Item]]]]:
         out = [(f, (lambda f=f, q=q: fetch_google(self.get, f, q))) for f, q in GOOGLE_QUERIES.items()]
+        out += [(f, (lambda f=f, u=u, p=p: fetch_direct(self.get, f, u, p, self.now())))
+                for f, (u, p) in DIRECT_FEEDS.items()]
         out += [(f, (lambda f=f, u=u: fetch_eia(self.get, f, u))) for f, u in EIA_FILES.items()]
         if self.yahoo:
             out.append(("yahoo", lambda: self.yahoo(self.get)))
@@ -465,7 +489,10 @@ def build_user_message(items: list[dict], evidence: dict | None = None,
 
 
 def validate(raw: str, keys: set[str]) -> list[dict]:
-    """Parse and check the model's JSON. Any problem raises ValueError (= analysis failed)."""
+    """Parse and check the model's JSON. A broken response (not JSON, not an array, unknown or
+    missing keys) raises ValueError (= analysis failed). One item with an out-of-range value no
+    longer fails the whole batch: that item is kept as an explicit "invalid_output" record,
+    which is never relevant or material and is not retried, and the other items stand."""
     text = raw.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-z]*\n?|```$", "", text).strip()
@@ -476,15 +503,18 @@ def validate(raw: str, keys: set[str]) -> list[dict]:
     for d in data:
         if not isinstance(d, dict) or set(d) - {"relation"} != KEYS:
             raise ValueError(f"wrong keys: {sorted(d) if isinstance(d, dict) else d!r}")
-        if d.get("relation", "new") not in RELATIONS:
-            raise ValueError(f"relation={d['relation']!r} not allowed")
-        for k, allowed in ALLOWED.items():
-            if d[k] not in allowed:
-                raise ValueError(f"{k}={d[k]!r} not allowed")
-        if not isinstance(d["relevant"], bool) or not isinstance(d["update_of_older_story"], bool):
-            raise ValueError("relevant/update_of_older_story must be booleans")
         if d["key"] not in keys:
             raise ValueError(f"unknown key {d['key']}")
+        problems = [f"{k}={d[k]!r}" for k, allowed in ALLOWED.items() if d[k] not in allowed]
+        if d.get("relation", "new") not in RELATIONS:
+            problems.append(f"relation={d['relation']!r}")
+        if not isinstance(d["relevant"], bool) or not isinstance(d["update_of_older_story"], bool):
+            problems.append("relevant/update_of_older_story not booleans")
+        if problems:
+            d = {**{k: d.get(k) for k in KEYS}, "category": "other", "status": "opinion",
+                 "scope": "not_oil", "relevant": False, "bias": "unclear", "mechanism": "",
+                 "update_of_older_story": False, "relation": "new",
+                 "invalid_output": "; ".join(problems)[:200]}
         out.append(d)
     if {d["key"] for d in out} != keys:
         raise ValueError("model did not classify every item")
@@ -914,6 +944,52 @@ def report(folder: str | Path) -> dict:
 _VIEW_CACHE: dict = {}
 
 
+def _load_log(folder: str | Path) -> tuple[list[dict], dict] | None:
+    """(events, collector state) from the news log, cached until either file changes."""
+    folder = Path(folder)
+    log, state_path = folder / "news.jsonl", folder / "news_state.json"
+    if not log.exists() or not state_path.exists():
+        return None
+    # mtime alone can repeat for two quick writes on Windows; size changes with every append
+    mt = tuple((s.st_mtime_ns, s.st_size) for s in (log.stat(), state_path.stat()))
+    if _VIEW_CACHE.get("key") != (str(folder), mt):
+        events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x.strip()]
+        _VIEW_CACHE.update(key=(str(folder), mt), events=events,
+                           st=json.loads(state_path.read_text(encoding="utf-8")))
+    return _VIEW_CACHE["events"], _VIEW_CACHE["st"]
+
+
+def classified_items(folder: str | Path, now: datetime, hours: float = CONFLICT_HOURS) -> list[dict]:
+    """Every news item first seen in the last ``hours`` that the model has classified, with its
+    classification, evidence status, event cluster and whether it is material or urgent.
+    Unclassified items are left out (they are not known yet). Used by the information lane."""
+    loaded = _load_log(folder)
+    if loaded is None:
+        return []
+    events, _ = loaded
+    cls, ev = {}, {}
+    for e in events:
+        if e["event"] == "analysis":
+            for c in e.get("parsed") or []:
+                cls[c["key"]] = c
+        elif e["event"] == "evidence":
+            ev[e["key"]] = e.get("status")
+    out = []
+    for e in events:
+        if e["event"] != "item" or e["feed"].startswith("eia:") or e["key"] not in cls:
+            continue
+        seen = datetime.fromisoformat(e["first_seen"])
+        if not (timedelta(0) <= now - seen < timedelta(hours=hours)):
+            continue
+        c = cls[e["key"]]
+        out.append({**{k: e.get(k) for k in ("key", "title", "publisher", "link", "published",
+                                             "first_seen", "feed", "cluster", "repeat_of", "summary")},
+                    "classification": c, "relation": relation(c), "evidence": ev.get(e["key"], "not_attempted"),
+                    "material": is_material(c, e, now, hours), "changes_event": changes_event(c, e),
+                    "urgent": is_urgent(e)})
+    return out
+
+
 def news_view(folder: str | Path, now: datetime) -> dict:
     """Current news state for the price monitor, recomputed from the news log (no model call).
 
@@ -925,18 +1001,11 @@ def news_view(folder: str | Path, now: datetime) -> dict:
     than "checked" gives state "unavailable": the monitor never acts on news it has not seen
     and analysed.
     """
-    folder = Path(folder)
-    log, state_path = folder / "news.jsonl", folder / "news_state.json"
-    if not log.exists() or not state_path.exists():
+    loaded = _load_log(folder)
+    if loaded is None:
         return {"state": "unavailable", "status": "collector_missing",
                 "why": "news check not running (no news log)", "items": [], "basis": ANALYSIS_BASIS}
-    # mtime alone can repeat for two quick writes on Windows; size changes with every append
-    mt = tuple((s.st_mtime_ns, s.st_size) for s in (log.stat(), state_path.stat()))
-    if _VIEW_CACHE.get("key") != (str(folder), mt):
-        events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x.strip()]
-        _VIEW_CACHE.update(key=(str(folder), mt), events=events,
-                           st=json.loads(state_path.read_text(encoding="utf-8")))
-    events, st = _VIEW_CACHE["events"], _VIEW_CACHE["st"]
+    events, st = loaded
     health = coverage(st.get("feeds", {}), now)
     items = {e["key"]: e for e in events if e["event"] == "item" and not e["feed"].startswith("eia:")
              and now - datetime.fromisoformat(e["first_seen"]) < timedelta(hours=CONFLICT_HOURS)
