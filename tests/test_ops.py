@@ -13,23 +13,114 @@ pytestmark = pytest.mark.unit
 T = datetime(2026, 11, 6, 20, 0, tzinfo=UTC)        # Friday 15:00 New York
 
 
-def test_notices_confirm_remind_boundedly_and_recover(tmp_path):
+def test_notices_quiet_until_one_hour_then_one_message_and_no_recovered(tmp_path):
     st = tmp_path / "n.json"
     p = ["news collector not running"]
-    assert notices.step(st, p, T) == []
-    assert notices.step(st, p, T + timedelta(minutes=1)) == []
-    first = notices.step(st, p, T + timedelta(minutes=2))
-    assert first == ["PROBLEM (process): news collector not running (since 20:00 UTC)"]
-    assert notices.step(st, p, T + timedelta(minutes=3)) == []           # not every minute
     sent = []
-    for m in range(4, 60 * 50, 1):
+    for m in range(0, 60):
         sent += notices.step(st, p, T + timedelta(minutes=m))
-    assert len(sent) == 3 and sent[-1].endswith("(last reminder)")      # 1 h, 6 h, 24 h, then quiet
-    rec = notices.step(st, [], T + timedelta(hours=51))
-    assert rec[0].startswith("RECOVERED (process)")
-    # a blip shorter than the confirmation never notifies, and never "recovers"
-    assert notices.step(st, ["no new quote for 120s"], T) == []
-    assert notices.step(st, [], T + timedelta(minutes=1)) == []
+    assert sent == []                                                   # first hour: log only
+    sent = notices.step(st, p, T + timedelta(minutes=60))
+    assert len(sent) == 1 and sent[0].startswith("DOWN 1.0 h (process): news collector not running")
+    for m in range(61, 60 * 30):
+        sent += notices.step(st, p, T + timedelta(minutes=m))
+    assert len(sent) == 1                                               # no reminders
+    assert notices.step(st, [], T + timedelta(hours=31)) == []          # no "recovered" message
+    h = notices.load(st)["history"][-1]
+    assert h["escalated"] and h["confirmed"] and h["minutes"] > 60 * 29
+    # a fresh outage of the same problem later is noticed again (once)
+    again = []
+    for m in range(0, 61):
+        again += notices.step(st, p, T + timedelta(hours=32, minutes=m))
+    assert len(again) == 1
+
+
+def test_notices_same_problem_twice_in_a_day_sends_once(tmp_path):
+    st = tmp_path / "n.json"
+    p = ["quotes failing"]
+    sent = []
+    for start in (0, 180):       # two 2-hour outages, 3 hours apart
+        for m in range(0, 120):
+            sent += notices.step(st, p, T + timedelta(minutes=start + m))
+        notices.step(st, [], T + timedelta(minutes=start + 120))
+    assert len(sent) == 1
+
+
+def test_notices_numbers_in_text_are_one_problem(tmp_path):
+    st = tmp_path / "n.json"
+    sent = []
+    for m in range(0, 61):
+        sent += notices.step(st, [f"news analysis_failed: {m % 9 + 2} recent items not analysed; "
+                                  f"last model call failed: APIError {m}"], T + timedelta(minutes=m))
+    assert len(sent) == 1 and "(model)" in sent[0]
+    assert len(notices.load(st)["open"]) == 1
+
+
+def test_notices_blips_and_summary(tmp_path):
+    st = tmp_path / "n.json"
+    notices.step(st, ["no new quote for 120s"], T)
+    notices.step(st, [], T + timedelta(minutes=1))                      # a blip
+    for m in range(2, 12):
+        notices.step(st, ["chart data refresh failing"], T + timedelta(minutes=m))
+    notices.step(st, [], T + timedelta(minutes=12))
+    notices.step(st, ["price monitor not running"], T + timedelta(minutes=13))
+    s = notices.summary(st, T + timedelta(minutes=14))
+    assert s["blips"] == 1 and s["resolved"][0]["reason"] == "chart data refresh failing"
+    assert s["resolved"][0]["minutes"] == 10 and s["open"][0]["reason"] == "price monitor not running"
+    text = "\n".join(notices.summary_lines(s))
+    assert "recovered" in text and "STILL OPEN" in text
+    assert notices.summary_lines(notices.summary(tmp_path / "none.json", T)) == [
+        "problems in the last 24 h, handled automatically: none."]
+
+
+def test_notices_reads_old_state_format(tmp_path):
+    st = tmp_path / "n.json"
+    st.write_text(json.dumps({"open": {"quotes failing": {"first": T.isoformat(), "seen": 5,
+                                                          "notified": T.isoformat(), "reminders": 1}}}))
+    assert notices.step(st, [], T + timedelta(minutes=5)) == []
+    assert notices.load(st)["history"][0]["reason"] == "quotes failing"
+
+
+class FakeSystemctl:
+    def __init__(self, states):
+        self.states, self.calls = dict(states), []
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        out = self.states.get(args[1], "inactive") if args[0] == "is-active" else ""
+        return SimpleNamespace(stdout=out + "\n", stderr="", returncode=0)
+
+
+def test_heal_restarts_failed_or_stuck_after_five_minutes_with_cooldown(tmp_path):
+    from tradingagents.ops import heal
+
+    st = tmp_path / "n.json"
+    probs = ["price monitor not running", "news collector alive but not polling for 15 min"]
+    sc = FakeSystemctl({"brent-monitor": "failed", "brent-news": "active"})
+    for m in range(0, 5):
+        notices.step(st, probs, T + timedelta(minutes=m))
+        assert heal.heal(st, T + timedelta(minutes=m), run=sc) == []     # under 5 min: wait
+    notices.step(st, probs, T + timedelta(minutes=5))
+    done = heal.heal(st, T + timedelta(minutes=5), run=sc)
+    assert len(done) == 2
+    assert ("reset-failed", "brent-monitor") in sc.calls and ("start", "brent-monitor") in sc.calls
+    assert ("restart", "brent-news") in sc.calls
+    n = len(sc.calls)
+    notices.step(st, probs, T + timedelta(minutes=10))
+    assert heal.heal(st, T + timedelta(minutes=10), run=sc) == [] and len(sc.calls) == n  # cooldown
+    assert len(heal.heal(st, T + timedelta(minutes=21), run=sc)) == 2
+    assert len(notices.load(st)["heals"]) == 4
+
+
+def test_heal_leaves_a_deliberately_stopped_service_alone(tmp_path):
+    from tradingagents.ops import heal
+
+    st = tmp_path / "n.json"
+    sc = FakeSystemctl({"brent-monitor": "inactive"})
+    for m in range(0, 10):
+        notices.step(st, ["price monitor not running", "quotes failing"], T + timedelta(minutes=m))
+    assert heal.heal(st, T + timedelta(minutes=9), run=sc) == []
+    assert all(c[0] == "is-active" for c in sc.calls)
 
 
 def test_backup_restore_verify_and_tamper(tmp_path):

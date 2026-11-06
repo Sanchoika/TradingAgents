@@ -13,7 +13,7 @@ import json
 import random
 import re
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import mean, median
 
@@ -386,8 +386,27 @@ def _table(d: dict) -> str:
     return f"<table>{rows}</table>"
 
 
+def problem_lines(journal_dir: str | Path, events: list[dict], now: datetime | None = None) -> list[str]:
+    """Problems handled quietly (no Telegram): health-check summary, self-heals, monitor notes."""
+    from tradingagents.ops import notices
+
+    now = now or datetime.now(UTC)
+    out = notices.summary_lines(notices.summary(Path(journal_dir) / "health_notices.json", now, 24),
+                                "Health check: ")
+    since = (now - timedelta(hours=24)).isoformat()
+    recent = [e for e in events if e["event"] in ("ops", "self_heal", "ops_notice_sent", "start_quiet")
+              and e.get("ts", "") >= since][-12:]
+    if recent:
+        out.append("Last 24 h log (newest last):")
+        for e in recent:
+            what = {"ops": "monitor note", "self_heal": "self-heal", "start_quiet": "monitor restarted",
+                    "ops_notice_sent": "Telegram notice"}[e["event"]]
+            out.append(f"- {e['ts'][:16]} {what}: {(e.get('text') or '')[:160]}")
+    return out
+
+
 def write_page(state: dict, events: list[dict], locked: bool, path: Path,
-               news: dict | None = None) -> Path:
+               news: dict | None = None, problems: list[str] | None = None) -> Path:
     """Read-only status and results page (no scripts, no controls)."""
     res = summarize(events)
     recent = [e for e in events if e["event"] == "signal"][-15:]
@@ -406,6 +425,8 @@ def write_page(state: dict, events: list[dict], locked: bool, path: Path,
         f"<p class=note>Updated {datetime.now(UTC):%Y-%m-%d %H:%M} UTC. Alerts only; no orders are "
         "placed. Hypothetical results are not trades you made.</p>"
         "<h2>Status</h2><pre>" + html.escape("\n".join(status_lines(state, locked, news=news))) + "</pre>"
+        + ("<h2>Problems handled automatically (no Telegram)</h2><pre>"
+           + html.escape("\n".join(problems)) + "</pre>" if problems else "") +
         "<h2>Recent signals</h2><table><tr><th>id</th><th>setup</th><th>zone</th><th>stop</th>"
         f"<th>status</th><th>paper net R</th></tr>{rows}</table>"
         "<h2>1. Operational</h2>" + _table(res["operational"]) +

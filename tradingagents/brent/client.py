@@ -22,6 +22,15 @@ class OandaReadError(RuntimeError):
     """OANDA refused a read or answered with something unexpected."""
 
 
+class OandaTransientError(OandaReadError):
+    """A read failed for a passing reason (timeout, dropped connection, HTTP 5xx) after retries."""
+
+
+# Waits before the 2nd and 3rd attempt of one read. A timeout right after a restart (or a brief
+# network blip) is retried here instead of reaching the monitor as an error.
+READ_RETRY_WAITS = (1.0, 3.0)
+
+
 @dataclass(frozen=True)
 class Quote:
     bid: float
@@ -68,8 +77,10 @@ def token_from_env_or_prompt(env=os.environ) -> str:
 
 class ReadOnlyOanda:
     def __init__(self, token: str, account_id: str | None = None,
-                 session: requests.Session | None = None, timeout: float = 5.0):
+                 session: requests.Session | None = None, timeout: float = 5.0,
+                 sleep=time.sleep):
         self.timeout = timeout
+        self._sleep = sleep
         self.session = session or requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {token}",
@@ -83,11 +94,30 @@ class ReadOnlyOanda:
             self.account_id = accounts[0]["id"]
 
     def _get(self, path: str, **params) -> dict:
+        """GET with a short retry for transient failures; a 4xx is raised at once."""
+        for attempt in range(len(READ_RETRY_WAITS) + 1):
+            last = attempt == len(READ_RETRY_WAITS)
+            try:
+                return self._get_once(path, params)
+            except requests.RequestException as exc:
+                if last:
+                    raise OandaTransientError(f"GET {path} -> {type(exc).__name__} after "
+                                              f"{attempt + 1} tries") from exc
+            except OandaTransientError:
+                if last:
+                    raise
+            self._sleep(READ_RETRY_WAITS[attempt])
+        raise RuntimeError("unreachable")
+
+    def _get_once(self, path: str, params: dict) -> dict:
         resp = self.session.get(f"{PRACTICE_URL}{path}", params=params or None, timeout=self.timeout)
         try:
             body = resp.json()
         except ValueError:
             body = {}
+        if resp.status_code >= 500:
+            raise OandaTransientError(f"GET {path} -> HTTP {resp.status_code}: "
+                                      f"{body.get('errorMessage') or resp.text[:200]}")
         if resp.status_code >= 400:
             raise OandaReadError(f"GET {path} -> HTTP {resp.status_code}: "
                                  f"{body.get('errorMessage') or resp.text[:200]}")
