@@ -5,6 +5,10 @@ on:
     branches: [main, 'v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
 
+# Read-only token: CI only checks out and tests. No secrets are used.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

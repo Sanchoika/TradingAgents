@@ -645,11 +645,11 @@ def test_early_read_removes_market_move_and_calls_checkpoints():
     assert out["scored"] == 60 and out["checkpoint"] == 50 and out["days"] == 30
     assert out["conviction"]["mild_mean_pct"] == 0.0    # FLAT short: no edge once SPY is removed
     assert out["long_minus_short_same_day"]["days"] == 30 and out["long_minus_short_same_day"]["mean_pct"] > 0
-    assert out["call"].startswith("promising")
+    assert out["call"].startswith("unvalidated: looks promising") and "UNVALIDATED" in out["inference"]
 
     wrong = [{"ticker": "UP", "trade_date": d, "rating": "Sell"} for d in ds[:25]]
     bad = early_read(wrong, bars, hold_days=5, today="2026-04-01")
-    assert bad["checkpoint"] == 20 and bad["mean_excess_pct"] < 0 and bad["call"].startswith("stop")
+    assert bad["checkpoint"] == 20 and bad["mean_excess_pct"] < 0 and bad["call"].startswith("unvalidated: looks worse")
 
     few = early_read(wrong[:5], bars, hold_days=5, today="2026-04-01")
     assert few["call"] == "too early" and few["checkpoint"] is None
@@ -725,8 +725,8 @@ def test_run_where_every_analysis_fails_is_not_ok(tmp_path):
                     earnings=lambda t: [pd.Timestamp("2026-11-02T21:00:00Z")],
                     now=datetime(2026, 11, 3, 13, tzinfo=UTC), edgar=lambda t: [])
     end = rows[-1]
-    assert end["event"] == "run_end" and end["ok"] is False and end["degraded"] is True
-    assert end["analyses"] == 2 and end["analysis_errors"] == 2
+    assert end["event"] == "run_end" and end["status"] == "failed" and end["ok"] is False
+    assert (end["attempted"], end["completed"], end["errored"]) == (2, 0, 2)
 
     from tradingagents.demo.notes import failed_run
     assert failed_run(j.events())["trade_date"] == "2026-11-03"
@@ -740,7 +740,7 @@ def test_clean_run_is_ok_and_not_degraded(tmp_path):
     rows = run_once(b, fixed_analyzer("Hold"), cfg, j, "2026-11-03",
                     earnings=lambda t: [pd.Timestamp("2026-11-02T21:00:00Z")],
                     now=datetime(2026, 11, 3, 13, tzinfo=UTC), edgar=lambda t: [])
-    assert rows[-1]["ok"] is True and rows[-1]["degraded"] is False and rows[-1]["analyses"] == 1
+    assert rows[-1]["status"] == "success" and rows[-1]["ok"] is True and rows[-1]["completed"] == 1
 
     from tradingagents.demo.notes import failed_run
     assert failed_run(j.events()) is None
@@ -756,3 +756,27 @@ def test_bare_run_start_after_run_end_existed_is_a_missing_run():
     # legacy days before run_end existed are still trusted
     legacy = [{"event": "run_start", "trade_date": "2026-11-04", "dry_run": False}]
     assert missing_run(legacy, datetime(2026, 11, 4, 14, tzinfo=UTC)) is None
+
+
+def test_one_failure_out_of_three_is_partial_and_the_watchdog_says_so(tmp_path):
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(mode="earnings", universe=["AAA", "BBB", "CCC"], journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+
+    def some(ticker, date):
+        if ticker == "BBB":
+            raise RuntimeError("provider error")
+        return ("REVIEW", "no parseable rating") if ticker == "CCC" else ("Hold", "ok")
+
+    rows = run_once(b, some, cfg, j, "2026-11-03",
+                    earnings=lambda t: [pd.Timestamp("2026-11-02T21:00:00Z")],
+                    now=datetime(2026, 11, 3, 13, tzinfo=UTC), edgar=lambda t: [])
+    end = rows[-1]
+    # fewer than half failed, but the run is still not a success: partial, visible to the watchdog
+    assert end["status"] == "partial" and end["ok"] is False
+    assert (end["attempted"], end["completed"], end["errored"], end["fallback"]) == (3, 1, 1, 1)
+    from tradingagents.demo.notes import failed_run
+    assert failed_run(j.events())["status"] == "partial"
+    # older run_end rows without a status still read correctly
+    assert failed_run([{"event": "run_end", "trade_date": "d", "ok": True}]) is None

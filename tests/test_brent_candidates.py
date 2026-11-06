@@ -150,3 +150,40 @@ def test_model_eval_scoring_and_fake_runs():
 
     res = me.run_config("gpt-6-luna", None, 1, make=lambda p, m, e: broken)
     assert res["runs"][0]["valid_json"] is False and res["effort"] == "provider default"
+
+
+def test_controls_run_to_the_scheduled_exit_not_the_strategy_hold(monkeypatch):
+    # audit finding 8(a): a stopped-out strategy trade must not cut its controls short
+    import numpy as np
+    import pandas as pd
+
+    from tradingagents.brent.research import candidates as c
+
+    idx = pd.date_range("2026-01-05 08:00", periods=200, freq="1min", tz="America/New_York")
+    d = pd.DataFrame(index=idx)
+    planned = idx[120]
+    base = pd.DataFrame([{"ie": 10, "held_min": 5.0, "stop": 70.0, "r_dist": 0.5,
+                          "t_exit_planned": planned, "r": -1.0}])
+    seen = []
+
+    def fake_fill(d, ie, s, stop, t_exit, k=1.0, r_override=None):
+        seen.append((s, t_exit))
+        return {"r": 0.3 * s}, None
+
+    monkeypatch.setattr(c, "fill_trade", fake_fill)
+    p95, always_long = c._controls(d, base, "london")
+    assert seen == [(1, planned), (-1, planned)]          # both directions, own stop, full horizon
+    assert always_long == 0.3 and p95 is not None and np.isfinite(p95)
+
+
+def test_bootstrap_interval_is_the_preregistered_97_5_percent():
+    # audit finding 8(b): 1.25% per tail, wider than the 95% interval used before
+    import numpy as np
+
+    from tradingagents.brent.research.candidates import CI_TAIL, block_boot_ci
+
+    assert CI_TAIL == 0.0125
+    x = np.random.default_rng(1).normal(0.1, 1.0, 500)
+    lo97, hi97 = block_boot_ci(x)
+    lo95, hi95 = block_boot_ci(x, alpha=0.025)
+    assert lo97 < lo95 and hi97 > hi95

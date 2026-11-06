@@ -30,6 +30,11 @@ MARKS = (60, 240)  # directional check-points, minutes after the alert
 CHART_STALE = timedelta(minutes=18)   # latest processed completed 15-min candle older -> no entries
 CTX_RETRY = timedelta(seconds=20)     # wait between candle refetches while a new bar is late
 NEWS_PROC_EVERY = timedelta(seconds=60)
+# Retries of a failed non-entry message (WATCH, its CANCEL, ENTRY updates): waits before attempts
+# 2, 3 and 4. A notice is dropped once its useful life (RETRY_LIFE) has passed. A failed ENTRY
+# itself is never resent: its quote and validity window are gone (it is recorded as missed).
+RETRY_WAITS = (timedelta(seconds=60), timedelta(minutes=5), timedelta(minutes=15))
+RETRY_LIFE = timedelta(minutes=30)
 
 
 def p90(xs: list[float]) -> float | None:
@@ -92,6 +97,7 @@ class Monitor:
         st.setdefault("suppressed_logged", {})
         st.setdefault("account", {})
         st.setdefault("watches", {})
+        st.setdefault("outbox", [])   # failed notices awaiting retry; in state, so restarts keep it
         st["rules"], st["config_hash"] = RULES_VERSION, self.cfg.config_hash()
         c = self.cfg
         st["effective"] = {
@@ -113,7 +119,9 @@ class Monitor:
         self.st["metrics"][name].append(round(value, 3))
 
     # --------------------------------------------------------------- messaging
-    def send(self, text: str, kind: str, sig_id: str = "") -> tuple[bool, float, datetime]:
+    def send(self, text: str, kind: str, sig_id: str = "", attempt: int = 1) -> tuple[bool, float, datetime]:
+        """One delivery attempt. ``ok`` means the notify command / Telegram API accepted it;
+        whether a phone displayed it is unknown and never recorded as known."""
         try:
             ok, secs = self._send(text)
         except Exception as exc:  # delivery failure must not stop monitoring
@@ -122,9 +130,41 @@ class Monitor:
         done = self.now()
         if ok:
             self._metric("send_s", secs)
-        self.store.write("sent", kind=kind, id=sig_id, ok=ok, seconds=round(secs, 3),
-                         done_at=_iso(done), text=text)
+        self.store.write("sent", kind=kind, id=sig_id, ok=ok, attempt=attempt, seconds=round(secs, 3),
+                         done_at=_iso(done), phone_receipt="unknown", text=text)
         return ok, secs, done
+
+    def send_notice(self, text: str, kind: str, ref_id: str, now: datetime) -> bool:
+        """Send a non-entry notice (CANCEL, ENTRY update or expiry); queue a bounded retry on
+        failure. The same text and id are resent, never a new message."""
+        ok, _, _ = self.send(text, kind, ref_id)
+        if not ok:
+            self.st["outbox"].append({"kind": kind, "id": ref_id, "text": text, "attempts": 1,
+                                      "created": _iso(now), "next_try": _iso(now + RETRY_WAITS[0])})
+            self.store.write("retry_queued", kind=kind, id=ref_id, attempt=1)
+        return ok
+
+    def flush_outbox(self, now: datetime):
+        keep = []
+        for m in self.st["outbox"]:
+            if now - _dt(m["created"]) > RETRY_LIFE:
+                self.store.write("retry_dropped", kind=m["kind"], id=m["id"], attempts=m["attempts"],
+                                 reason="useful life over")
+                continue
+            if now < _dt(m["next_try"]):
+                keep.append(m)
+                continue
+            m["attempts"] += 1
+            ok, _, _ = self.send(m["text"], m["kind"], m["id"], attempt=m["attempts"])
+            if ok:
+                continue
+            if m["attempts"] > len(RETRY_WAITS):
+                self.store.write("retry_dropped", kind=m["kind"], id=m["id"], attempts=m["attempts"],
+                                 reason="attempts used up")
+                continue
+            m["next_try"] = _iso(now + RETRY_WAITS[m["attempts"] - 1])
+            keep.append(m)
+        self.st["outbox"] = keep
 
     def ops_notice(self, kind: str, text: str):
         last = self.st["ops"].get(kind)
@@ -341,6 +381,7 @@ class Monitor:
             self.try_alerts(q, self.now())
             self.notify_watches(q, self.now())
         self.end_watches(self.now())
+        self.flush_outbox(self.now())
         self._metric("tick_s", time.monotonic() - t0)
         self.save()
 
@@ -514,9 +555,15 @@ class Monitor:
                 continue  # try_alerts owns the ENTRY decision
             w = self.st["watches"].get(s.key)
             tag = re.sub(r"[-+]?\d[\d.]*", "#", cat)
-            if w and w["tag"] == tag:
+            if w and w.get("tag") == tag:
                 continue
-            if w and now - _dt(w["sent_at"]) < timedelta(seconds=self.cfg.watch_min_gap_seconds):
+            if w and w.get("sent_at") and \
+                    now - _dt(w["sent_at"]) < timedelta(seconds=self.cfg.watch_min_gap_seconds):
+                continue
+            fail = (w or {}).get("failed")
+            # the same state failed before: bounded backoff, then give up
+            if fail and fail["tag"] == tag and \
+                    (fail["attempts"] > len(RETRY_WAITS) or now < _dt(fail["next_try"])):
                 continue
             if not w:
                 self.st["seq_watch"] = self.st.get("seq_watch", 0) + 1
@@ -526,10 +573,16 @@ class Monitor:
             first = "tag" not in w
             text = messages.watch_text(w["id"], sd, q.mid, blocker, ex["news_line"], ex["chart_line"],
                                        first)
-            ok, secs, _ = self.send(text, "watch", w["id"])
-            w.update(tag=tag, sent_at=_iso(now), accepted=ok)
+            attempt = fail["attempts"] + 1 if fail and fail["tag"] == tag else 1
+            ok, secs, _ = self.send(text, "watch", w["id"], attempt=attempt)
+            if ok:   # only an accepted send moves the WATCH to its new state
+                w.update(tag=tag, sent_at=_iso(now), accepted=True)
+                w.pop("failed", None)
+            else:    # the content is rebuilt from the live state on the next attempt
+                w["failed"] = {"tag": tag, "attempts": attempt,
+                               "next_try": _iso(now + RETRY_WAITS[min(attempt, len(RETRY_WAITS)) - 1])}
             self.store.write("watch_notice", id=w["id"], key=s.key, state=cat, blocker=blocker,
-                             accepted=ok, first=first)
+                             accepted=ok, first=first, attempt=attempt)
 
     def end_watches(self, now: datetime):
         """UPDATE/CANCEL for a WATCH whose setup ended; a setup that became an ENTRY just links."""
@@ -550,7 +603,7 @@ class Monitor:
             reason = (sd or {}).get("end_reason") or "the setup is no longer on the chart"
             self.store.write("watch_end", id=w["id"], key=key, outcome=status, reason=reason)
             if self.cfg.alerts_enabled and self.cfg.watch_alerts:
-                self.send(messages.watch_end_text(w["id"], now, reason), "watch", w["id"])
+                self.send_notice(messages.watch_end_text(w["id"], now, reason), "watch", w["id"], now)
 
     def assess(self, s: Setup, q: Quote, now: datetime) -> dict:
         """Chart record (code) + news state (from the news log, no model call) + policy."""
@@ -808,7 +861,7 @@ class Monitor:
         now = self.now()
         self.store.write("update", id=sig["id"], status="invalidated", reason=reason)
         if sig.get("delivered") and sig.get("telegram", True):
-            self.send(messages.invalidated_text(sig["id"], now, reason), "update", sig["id"])
+            self.send_notice(messages.invalidated_text(sig["id"], now, reason), "update", sig["id"], now)
 
     def update_signals(self, q: Quote | None, now: datetime):
         for sig in list(self.st["signals"].values()):
@@ -819,7 +872,7 @@ class Monitor:
                     self.store.write("update", id=sig["id"], status="expired")
                     if self.cfg.send_expiry_notice and sig.get("delivered") \
                             and sig.get("telegram", True):
-                        self.send(messages.expired_text(sig["id"], now), "update", sig["id"])
+                        self.send_notice(messages.expired_text(sig["id"], now), "update", sig["id"], now)
                 elif q is None:
                     self.invalidate(sig, "quote unavailable")
                 else:

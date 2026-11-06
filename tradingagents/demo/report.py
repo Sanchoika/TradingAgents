@@ -190,7 +190,11 @@ def early_read(decisions: list[dict], bars, hold_days: int = 5, today: str | Non
         except Exception:
             errors += 1
     out = {"scored": len(rows), "pending": pending, "benchmark": benchmark,
-           "note": "early read from ratings, market move removed; not the 150-trade verdict"}
+           "note": "early read from ratings, market move removed; not the 150-trade verdict",
+           "inference": "UNVALIDATED: t_by_day treats overlapping 5-session windows and same-day "
+                        "ratings as independent, so it overstates certainty, and repeated looks are "
+                        "not accounted for. Descriptive only until a validated method replaces it; "
+                        "at most a reason to review, never a reason to change the test."}
     if errors:
         out["price_errors"] = errors
     if not rows:
@@ -218,9 +222,9 @@ def early_read(decisions: list[dict], bars, hold_days: int = 5, today: str | Non
     if not reached or t is None:
         out["call"] = "too early"
     elif t <= STOP_T:
-        out["call"] = "stop: clearly worse than no skill"
+        out["call"] = "unvalidated: looks worse than no skill (review, do not act on it alone)"
     elif t >= PROMISING_T:
-        out["call"] = "promising (keep running; verdict at 150 closed trades)"
+        out["call"] = "unvalidated: looks promising (keep running; verdict at 150 closed trades)"
     else:
         out["call"] = "no clear signal yet"
     return out

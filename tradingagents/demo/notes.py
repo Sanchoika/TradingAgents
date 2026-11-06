@@ -114,9 +114,14 @@ RUN_END_SINCE = "2026-11-05"   # first trade date whose run writes run_end
 
 
 def failed_run(events: list[dict]) -> dict | None:
-    """The latest real run_end, if it reported ok=false (a run that finished but did not work)."""
+    """The latest real run_end, if that run did not fully succeed (status partial or failed;
+    run_ends written before statuses existed count by their ``ok`` flag)."""
     ends = [e for e in events if e["event"] == "run_end" and not e.get("dry_run")]
-    return ends[-1] if ends and ends[-1].get("ok") is False else None
+    if not ends:
+        return None
+    last = ends[-1]
+    status = last.get("status") or ("success" if last.get("ok", True) else "failed")
+    return last if status != "success" else None
 
 
 def missing_run(events: list[dict], now, run_hour: int = 8, grace_hours: int = 1) -> str | None:

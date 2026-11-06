@@ -104,3 +104,34 @@ def test_listener_must_be_localhost_and_a_user_is_required(tmp_path):
         ControlConfig(allowed_users=["a"], brent_toml="x", host="0.0.0.0")
     with pytest.raises(ValueError):
         ControlConfig(allowed_users=[], brent_toml="x")
+
+
+def test_stock_status_after_rollback_never_reads_as_no_runs(tmp_path):
+    # audit finding 5: a journal path that does not exist is reported, not shown as "none"
+    app, _ = make(tmp_path, demo_journal=str(tmp_path / "missing"))
+    lines = app.demo_lines()
+    assert "not found" in lines[0] and "none" not in " ".join(lines)
+
+
+def test_stock_status_from_pc_snapshot_with_staleness(tmp_path):
+    from datetime import UTC, datetime
+
+    from tradingagents.control.app import snapshot_lines
+
+    snap = tmp_path / "data.json"
+    assert "not found" in snapshot_lines(snap)[0]
+    snap.write_text(json.dumps({
+        "built_at": "2026-11-05T13:30:00+00:00",
+        "runs": [{"trade_date": "2026-11-05", "dry_run": False,
+                  "end": {"status": "partial", "completed": 2, "attempted": 3, "errored": 1}}],
+        "account": {"closed": [{}], "positions": [
+            {"status": "pending"}, {"status": "open"},
+            {"status": "closing", "exit_requested_on": "2026-11-05"}]}}))
+    fresh = snapshot_lines(snap, 26, now=datetime(2026, 11, 5, 15, tzinfo=UTC))
+    assert "STALE" not in fresh[0] and "1.5 h ago" in fresh[0]
+    assert "finished partial: 2/3" in fresh[1]
+    assert "pending 1, open 1, exit pending 1, closed 1" in fresh[2]
+    old = snapshot_lines(snap, 26, now=datetime(2026, 11, 7, 15, tzinfo=UTC))
+    assert "STALE" in old[0]
+    app, _ = make(tmp_path, demo_snapshot=str(snap))
+    assert any("exit pending" in x for x in app.demo_lines())

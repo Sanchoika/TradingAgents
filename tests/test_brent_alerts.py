@@ -809,5 +809,96 @@ def test_replay_groups_sessions_by_version_with_one_definition():
     a, b = out["brent-exp-2 range 100-120"], out["brent-exp-3 range 80-115"]
     assert a["hours_monitored"] == 4.0 and a["hours_outside_range"] == 1.5
     assert a["setups_detected"] == 1 and a["entry_zone_reached"] == 1       # legacy suppressed counts
-    assert b["setups_detected"] == 1 and b["evidence_ready"] == 1
+    # the candidate carries no recorded news state: unknown, never counted as ready
+    assert b["setups_detected"] == 1 and b["evidence_ready"] == 0 and b["evidence_ready_unknown"] == 1
     assert a["setups_per_100_hours_in_range"] == 40.0                          # 1 setup / 2.5 h in range
+
+
+# --------------------------------------------- delivery retries (audit finding 2)
+def test_failed_watch_is_retried_with_backoff_then_stops(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    sender.ok = False
+    arm_setup(mon, client, clock)
+    assert len(watches(sender)) == 1                      # attempt 1 failed
+    clock.advance(10)
+    mon.tick()
+    assert len(watches(sender)) == 1                      # not before the 60 s backoff
+    sender.ok = True
+    clock.advance(60)
+    mon.tick()
+    assert len(watches(sender)) == 2                      # attempt 2 accepted, same WATCH id
+    assert all("BW-20261103-001" in t for t in watches(sender))
+    for _ in range(5):
+        clock.advance(120)
+        mon.tick()
+    assert len(watches(sender)) == 2                      # nothing more once accepted
+    notes = [e for e in store.events() if e["event"] == "watch_notice"]
+    assert [(n["accepted"], n["attempt"]) for n in notes] == [(False, 1), (True, 2)]
+
+
+def test_watch_that_never_gets_through_stops_after_four_attempts(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    sender.ok = False
+    arm_setup(mon, client, clock)
+    for _ in range(40):
+        clock.advance(60)
+        mon.tick()
+    assert len(watches(sender)) == 4
+
+
+def test_failed_cancel_is_retried_after_a_restart(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    arm_setup(mon, client, clock)
+    sender.ok = False
+    clock.advance(1900)
+    client.m15 = m15(109.6, high=110.0, low=109.5, end=clock.t)
+    mon.tick()
+    assert len([t for t in sender.texts if "CANCELLED" in t]) == 1 and mon.st["outbox"]
+    # the process restarts: the queued CANCEL is in saved state
+    sender.ok = True
+    mon2 = Monitor(mon.cfg, client, store, sender, now=clock, news_view=NewsFake())
+    clock.advance(70)
+    mon2.tick()
+    cancels = [t for t in sender.texts if "CANCELLED" in t]
+    assert len(cancels) == 2 and cancels[0] == cancels[1] and mon2.st["outbox"] == []
+    clock.advance(600)
+    mon2.tick()
+    assert len([t for t in sender.texts if "CANCELLED" in t]) == 2
+
+
+def test_failed_entry_is_never_resent(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    arm_setup(mon, client, clock)
+    sender.ok = False
+    client.bid, client.ask = 110.17, 110.20
+    clock.advance(10)
+    mon.tick()
+    assert len(alerts(sender)) == 1
+    sender.ok = True
+    for _ in range(20):
+        clock.advance(60)
+        mon.tick()
+    assert len([t for t in alerts(sender) if "| ENTRY |" in t]) == 1
+    assert any(e["event"] == "paper_missed" and e["reason"] == "alert not delivered"
+               for e in store.events())
+
+
+def test_progression_counts_only_usable_evidence_and_accepted_watches():
+    # audit finding 6
+    from tradingagents.brent.report import progression
+
+    def ev(event, **kw):
+        return {"ts": "2026-11-05T12:00:00+00:00", "event": event, **kw}
+
+    events = [ev("watch", key="A", setup={}), ev("watch", key="B", setup={}),
+              ev("candidate", key="A", direction="LONG", action="WATCH", row="evidence missing",
+                 assessment={"news": {"state": "unavailable"}}),
+              ev("candidate", key="B", direction="LONG", action="WATCH", row="mixed",
+                 assessment={"news": {"state": "mixed"}}),
+              ev("watch_notice", id="BW-1", key="A", accepted=False),
+              ev("watch_notice", id="BW-1", key="A", accepted=False),
+              ev("watch_notice", id="BW-2", key="B", accepted=True)]
+    p = progression(events)
+    assert p["evidence_ready"] == 1 and p["evidence_ready_unknown"] == 0
+    assert p["watch_messages_sent"] == 1 and p["watch_send_attempts_failed"] == 2
+    assert p["watch_messages_unique_watches"] == 1

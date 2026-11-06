@@ -122,15 +122,30 @@ def run_once(broker, analyze: Analyzer, cfg: DemoConfig, journal: Journal,
 
 
 def run_health(rows: list[dict], symbols: int) -> dict:
-    """Did this run actually work? ``ok`` is false when at least half of the analyses failed
-    or no symbol's earnings could be looked up; ``degraded`` when anything failed at all."""
+    """What this run actually achieved, from the rows it wrote.
+
+    attempted = analyses started; completed = returned one of the five ratings; fallback =
+    returned no parseable rating ("REVIEW"); errored = raised. ``status``: "success" when nothing
+    failed, "partial" when something failed but at least one analysis completed (or nothing was
+    due), "failed" when analyses were due and none completed, or no earnings lookup worked.
+    ("incomplete" is what readers call a run_start with no run_end.) ``ok`` is kept for older
+    readers and is true only for "success"."""
+    tiers = {"Buy", "Overweight", "Hold", "Underweight", "Sell"}
     errors = [r for r in rows if r.get("event") == "error"]
     lookup = sum(str(r.get("error", "")).startswith("earnings lookup") for r in errors)
-    failed = len(errors) - lookup
-    analyses = sum(r.get("event") == "decision" for r in rows) + failed
-    ok = not (analyses and 2 * failed >= analyses) and not (symbols and lookup >= symbols)
-    return {"ok": ok, "degraded": bool(errors), "analyses": analyses, "analysis_errors": failed,
-            "lookup_errors": lookup}
+    errored = len(errors) - lookup
+    ratings = [r.get("rating") for r in rows if r.get("event") == "decision"]
+    completed = sum(r in tiers for r in ratings)
+    fallback = len(ratings) - completed
+    attempted = len(ratings) + errored
+    if (attempted and not completed) or (symbols and lookup >= symbols):
+        status = "failed"
+    elif errored or fallback or lookup:
+        status = "partial"
+    else:
+        status = "success"
+    return {"status": status, "ok": status == "success", "attempted": attempted,
+            "completed": completed, "errored": errored, "fallback": fallback, "lookup_errors": lookup}
 
 
 def _llm_label(cfg) -> str:
