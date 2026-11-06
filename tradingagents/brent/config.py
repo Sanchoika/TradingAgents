@@ -85,6 +85,17 @@ class BrentConfig:
     alerts_enabled: bool = False
     report_base_url: str = ""        # e.g. https://<host>/brent : alert links to signals/<id>.html
 
+    # Information lane (INFO): context messages, never trade suggestions. Off = computed and
+    # logged as shadow, not sent. Caps are per New York day.
+    info_alerts: bool = False
+    info_briefs_et: list[str] = field(default_factory=lambda: ["07:00", "12:00"])
+    info_per_day: int = 4             # non-urgent INFO per day, including the briefs
+    info_brief_slots: int = 2         # of info_per_day, kept for the scheduled briefs
+    info_min_gap_minutes: int = 45    # between unscheduled routine INFO messages
+    info_urgent_per_day: int = 3      # urgent headlines and fast moves (skip the spacing)
+    info_updates_per_day: int = 6     # updates/corrections of INFO already sent
+    info_move_atr: float = 0.5        # fast move = this x daily ATR within 60 minutes
+
     # Operations
     poll_seconds: float = 3.0
     notify_command: str = ""         # e.g. "hermes send --to telegram --quiet"
@@ -111,7 +122,7 @@ class BrentConfig:
 
 
 EXPERIMENT_FIELDS = ("llm_provider", "llm_model", "llm_per_hour", "llm_per_day", "llm_reserve_urgent", "llm_quiet_et",
-                     "news_poll_seconds", "alerts_enabled", "watch_alerts")
+                     "news_poll_seconds", "alerts_enabled", "watch_alerts", "info_alerts")
 
 
 def code_commit() -> str:

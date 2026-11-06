@@ -135,3 +135,57 @@ def test_stock_status_from_pc_snapshot_with_staleness(tmp_path):
     assert "STALE" in old[0]
     app, _ = make(tmp_path, demo_snapshot=str(snap))
     assert any("exit pending" in x for x in app.demo_lines())
+
+
+def test_feedback_page_records_answers_with_history_and_one_time_nonces(tmp_path):
+    from tradingagents.brent import feedback
+    from tradingagents.brent.store import Store
+
+    app, _ = make(tmp_path)
+    st = Store(tmp_path / "j")
+    st.write("info", id="BI-20261106-001", kind="brief", sent=True, accepted=True,
+             text="[BRENT INFO] BI-20261106-001 | 07:00 ET BRIEF\nBrent mid 84.10")
+    st.write("info", id="BI-20261106-002", kind="brief", sent=False, accepted=None, shadow=True, text="x")
+    code, _, page = app.handle("GET", "/feedback", ME)
+    assert code == 200 and "BI-20261106-001" in page and "BI-20261106-002" not in page   # shadow not listed
+    assert "Took it" not in page                                                         # INFO only
+    n = re.search(r"name=value value=useful><input type=hidden name=nonce value=([\w-]+)>", page).group(1)
+    body = f"action=feedback&id=BI-20261106-001&kind=INFO+brief&value=useful&nonce={n}"
+    code, _, out = app.handle("POST", "/act", ME, body)
+    assert code == 200 and "Recorded: Useful" in out
+    assert app.handle("POST", "/act", ME, body)[0] == 409                                # replay refused
+    # a revision keeps the history; the latest answer wins
+    _, _, page = app.handle("GET", "/feedback", ME)
+    n = re.search(r"name=value value=too_late><input type=hidden name=nonce value=([\w-]+)>", page).group(1)
+    app.handle("POST", "/act", ME, f"action=feedback&id=BI-20261106-001&kind=INFO+brief&value=too_late&nonce={n}")
+    hist = feedback.history(tmp_path / "j")
+    assert [r["value"] for r in hist] == ["useful", "too_late"]
+    assert feedback.latest(tmp_path / "j")["BI-20261106-001|rating"]["value"] == "too_late"
+    with pytest.raises(ValueError):
+        feedback.record(tmp_path / "j", "u", "BI-1", "INFO brief", "took_it", datetime_now())
+
+
+def datetime_now():
+    from datetime import UTC, datetime
+    return datetime.now(UTC)
+
+
+def test_weekly_review_preview_is_descriptive(tmp_path):
+    from datetime import UTC, datetime
+
+    from tradingagents.brent import feedback
+
+    now = datetime(2026, 11, 8, 23, tzinfo=UTC)
+    ev = [{"ts": "2026-11-06T12:01:00+00:00", "event": "info", "id": "BI-1", "kind": "brief", "sent": True,
+           "accepted": True, "text": "a\nb"},
+          {"ts": "2026-11-06T15:00:00+00:00", "event": "info", "id": "BI-2", "kind": "move", "sent": True,
+           "accepted": True, "change": 1.2, "text": "a\nb"},
+          {"ts": "2026-11-06T16:00:00+00:00", "event": "info_held", "reason": "routine cap 2/day reached"},
+          {"ts": "2026-11-06T17:00:00+00:00", "event": "paper_exit", "id": "BS-1", "net_r": 1.4}]
+    fb = {"BI-1|rating": {"value": "useful"}}
+    w = feedback.weekly(ev, fb, now)
+    assert w["info"]["sent"] == 2 and w["info"]["held_by_reason"] == {"routine cap 2/day reached": 1}
+    assert w["feedback"]["INFO brief"] == {"useful": 1} and w["feedback"]["INFO move"] == {"no answer": 1}
+    assert len(w["retrospective_context"]["fast_moves_without_news_info_in_prior_2h"]) == 1
+    text = feedback.weekly_text(w, preview=True)
+    assert text.startswith("[BRENT WEEKLY] PREVIEW") and "not scored" in text and "net R after costs [1.4]" in text

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import chart, messages, news, rules
+from . import chart, info, messages, news, rules
 from .client import OandaReadError, Quote
 from .config import PAPER_RULES_VERSION, RULES_VERSION, BrentConfig, code_commit, manifest
 from .rules import LONG, Setup
@@ -77,6 +77,8 @@ class Monitor:
         self.report_pages = report_pages
         self.st = store.state() or {}
         self._init_state()
+        self.info = info.InfoLane(cfg, store, self.st,
+                                  lambda text, ref, t: self.send_notice(text, "info", ref, t))
         self.last_quote: Quote | None = None
         self.daily: list[dict] | None = None
         self.h1: list[dict] | None = None
@@ -382,6 +384,10 @@ class Monitor:
             self.notify_watches(q, self.now())
         self.end_watches(self.now())
         self.flush_outbox(self.now())
+        try:   # the information lane must never be able to stop monitoring or touch trades
+            self.info.step(q, self.st.get("ctx"), self.daily, self.cfg.journal_dir, self.now())
+        except Exception as exc:
+            self.ops_notice("info_error", f"information lane error: {type(exc).__name__}: {exc}"[:300])
         self._metric("tick_s", time.monotonic() - t0)
         self.save()
 

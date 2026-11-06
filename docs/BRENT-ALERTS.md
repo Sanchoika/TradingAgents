@@ -320,7 +320,14 @@ python -m tradingagents.brent --config brent.toml news-report
 |---|---|---|
 | Google News RSS | Queries `Brent crude`, `OPEC+ oil output`, `oil supply disruption`, `site:opec.org` | none |
 | Yahoo Finance (off by default since 2026-11-05: no news for these tickers in 1,073 server polls) | `BZ=F`, `CL=F` | none |
+| OilPrice.com RSS (direct publisher feed, from 2026-11-06) | `oilprice.com/rss/main`; links go to the article, so it can be read | none |
 | EIA WPSR release files | `ir.eia.gov/wpsr/summary.txt`, `table1.csv` | none |
+
+Google News links are redirects that cannot be resolved offline: on 2026-11-06 all 139 evidence
+checks in three days were `redirect_unresolved`, so Google items are analyzed from the headline
+and snippet only. The direct OilPrice.com feed is the first route with readable articles.
+rigzone.com and spglobal.com refuse automated requests (403) and are not used; opec.org is
+behind Cloudflare. `news-report` shows the evidence status counts and the hosts not read.
 
 The EIA API v2 needs a free key, but these release files do not. Every feed is treated as
 unverified for timeliness until the report shows measured delays.
@@ -472,3 +479,42 @@ The independent audit of e10d2f3 (2026-11-02) found ten issues. Each was reprodu
 (`watch_min_gap_seconds`, default 300). Outcome tracking stays separate: only ENTRY alerts and
 chart-only shadow signals are paper-tracked; WATCH events are journalled as `watch_notice` /
 `watch_end`.
+
+## Information lane (INFO), from 2026-11-06
+
+`[BRENT INFO] BI-… INFORMATION ONLY | no trade suggested`. Context messages, built in code from
+quotes, candles and the already-classified news log (no extra model call). INFO never contains an
+entry, stop or target and never creates a setup, signal or paper fill (tested: the same market path
+with INFO on and off produces identical trade messages).
+
+| Kind | When |
+|---|---|
+| Brief | 07:00 and 12:00 New York on weekdays (not Jan 1 / Dec 25); skipped if more than 45 min late. Price, change in ATR, yesterday's and 20-day range, next EIA report (flagged as unverified in holiday weeks), news check state and up to 3 material items. Missing data is named, not filled in. |
+| News | A material, fresh (under 2 h) news item, once per event: publisher, status, evidence label, first-seen time, the model's reading, and the price since first seen (not claimed as the cause). |
+| Update | A confirmation / update / denial / correction / resolution of an event already sent, linked to the earlier BI id. A denial is reported as a denial; it does not by itself disprove the earlier report. |
+| Level | Brent held beyond yesterday's or the 20-day high/low by at least 0.05 ATR for 15 minutes; once per level per day. |
+| Fast move | At least `info_move_atr` (0.5) x daily ATR within 60 minutes; once per direction per 3 h. |
+
+Caps per New York day: `info_per_day` = 4 non-urgent messages including `info_brief_slots` = 2
+for the briefs, at least `info_min_gap_minutes` = 45 between unscheduled routine messages;
+urgent headlines and fast moves skip the spacing (ceiling `info_urgent_per_day` = 3); updates of
+already-sent INFO are not blocked by the routine cap (ceiling `info_updates_per_day` = 6). INFO
+runs outside the 80-115 range with a label. The quiet window still blocks model calls only, so
+news waiting for classification goes out after 10:30 if it is still fresh. `info_alerts = false`
+computes and logs everything as shadow without sending (rollback: set it false and restart
+brent-monitor). Failed INFO sends are retried for 30 minutes like other notices.
+
+**Feedback.** The phone page's "Rate recent Brent messages" lists sent INFO, WATCH and ENTRY
+messages: Useful / Not useful / Too late, plus Took it / Skipped for ENTRY. Answers go to
+`feedback.jsonl` (append-only; the latest answer wins, history kept; no answer is not negative).
+
+**Weekly review.** `weekly` prints a labelled preview; the `brent-weekly.timer` sends it Sundays
+18:00 New York. Descriptive: counts, holds, feedback, paper results after costs. INFO is not scored
+for direction (it makes no directional call); fast moves without prior news INFO are context only.
+
+**Second opinion.** `second-opinion BS-…` makes one bounded model call about a recorded ENTRY and
+logs it (never sent, never blocking). It counts against the shared 12/hour and 250/24h budget and
+is refused in the quiet window. `prospective` is true only if the answer came before the outcome.
+
+**One-time test.** `info-test` sends one labelled end-to-end INFO message and refuses a second.
+
