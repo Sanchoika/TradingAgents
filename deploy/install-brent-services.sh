@@ -21,7 +21,9 @@ chmod 600 /etc/tradingagents/brent.env
 [ -e /etc/tradingagents/heartbeat-url ] || { umask 077; : > /etc/tradingagents/heartbeat-url; }
 
 cp "$UNITS"/brent-monitor.service "$UNITS"/brent-news.service "$UNITS"/brent-health.service \
-   "$UNITS"/brent-health.timer "$UNITS"/brent-weekly.service "$UNITS"/brent-weekly.timer /etc/systemd/system/
+   "$UNITS"/brent-health.timer "$UNITS"/brent-weekly.service "$UNITS"/brent-weekly.timer \
+   "$UNITS"/brent-backup.service "$UNITS"/brent-backup.timer "$UNITS"/ops-nightly.service \
+   "$UNITS"/ops-nightly.timer /etc/systemd/system/
 systemctl daemon-reload
 
 # Stop the tmux copies gracefully, then hand over to systemd.
@@ -34,10 +36,12 @@ sleep 3
 tmux kill-session -t brent 2>/dev/null || true
 tmux kill-session -t brentnews 2>/dev/null || true
 
-systemctl enable --now brent-news brent-monitor brent-health.timer brent-weekly.timer
+systemctl enable --now brent-news brent-monitor brent-health.timer brent-weekly.timer \
+   brent-backup.timer ops-nightly.timer
 sleep 5
 systemctl --no-pager --lines=0 status brent-news brent-monitor || true
 "$PY" -m tradingagents.brent --config /root/ta-brent/brent.toml status | head -20
 
-# Rollback: systemctl disable --now brent-monitor brent-news brent-health.timer brent-weekly.timer
+# Rollback: systemctl disable --now brent-monitor brent-news brent-health.timer brent-weekly.timer \
+#   brent-backup.timer ops-nightly.timer
 #           then start-brent-monitor.sh / start-brent-news.bat as before.

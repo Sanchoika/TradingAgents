@@ -85,15 +85,63 @@ _TIERS = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
 _SIGN = {"Buy": 1, "Overweight": 1, "Hold": 0, "Underweight": -1, "Sell": -1}
 
 
+INCLUSION_RULE = ("every real (not dry-run) rating that returned one of the five tiers, from any "
+                  "run, including runs that partly failed; the first such rating per ticker and "
+                  "trade date counts and later re-runs of the same day are ignored. Fixed 2026-11-06.")
+
+
 def rating_decisions(events: list[dict]) -> list[dict]:
-    """Every real (not dry-run) rating in the journal, traded or not, Holds included."""
-    out, dry = [], False
+    """Every real (not dry-run) rating in the journal, traded or not, Holds included.
+
+    Each rating carries its provenance: when it was written (``ts``), the run it came from
+    (``run``: the run_start time), that run's outcome (``run_status``: success / partial /
+    failed, or "incomplete" when the run never wrote run_end, "unrecorded" for runs from before
+    run_end recorded a status) and ``conviction`` (strong for Buy/Sell, mild for
+    Overweight/Underweight, none for Hold). See ``INCLUSION_RULE``.
+    """
+    out, dry, run, seen = [], False, None, set()
+    status: dict[str | None, str] = {}
+    for e in events:
+        if e["event"] == "run_start":
+            dry, run = bool(e.get("dry_run")), e.get("ts")
+            status[run] = "incomplete"
+        elif e["event"] == "run_end" and run in status:
+            status[run] = e.get("status") or "unrecorded"
+        elif e["event"] == "decision" and not dry and e.get("rating") in _TIERS:
+            key = (e.get("ticker") or e["instrument"], e["trade_date"])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"ticker": key[0], "trade_date": e["trade_date"], "rating": e["rating"],
+                        "ts": e.get("ts"), "run": run,
+                        "conviction": {2: "strong", 1: "mild"}.get(_WEIGHT.get(e["rating"], 0), "none")})
+    for d in out:
+        d["run_status"] = status.get(d["run"], "unrecorded")
+    return out
+
+
+def missingness(events: list[dict]) -> dict:
+    """What the real runs failed to rate: analyses that errored or gave no usable rating, by run."""
+    runs, dry = [], False
     for e in events:
         if e["event"] == "run_start":
             dry = bool(e.get("dry_run"))
-        elif e["event"] == "decision" and not dry and e.get("rating") in _TIERS:
-            out.append({"ticker": e.get("ticker") or e["instrument"], "trade_date": e["trade_date"],
-                        "rating": e["rating"]})
+            if not dry:
+                runs.append({"trade_date": e.get("trade_date"), "status": "incomplete"})
+        elif e["event"] == "run_end" and not dry and runs:
+            runs[-1].update(status=e.get("status") or "unrecorded",
+                            **{k: e.get(k) for k in ("attempted", "completed", "errored", "fallback",
+                                                      "lookup_errors") if k in e})
+    tot = {k: sum(int(r.get(k) or 0) for r in runs) for k in ("attempted", "completed", "errored", "fallback")}
+    by_status: dict[str, int] = {}
+    for r in runs:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+    out = {"runs": len(runs), "runs_by_status": by_status, **tot,
+           "missing": tot["errored"] + tot["fallback"],
+           "note": "counts come from run_end records (from 2026-11-05); earlier runs show as "
+                   "unrecorded. Missing analyses are not imputed."}
+    if tot["attempted"]:
+        out["missing_share"] = round(out["missing"] / tot["attempted"], 3)
     return out
 
 
@@ -152,7 +200,7 @@ def _day_t(groups: list[list[float]]) -> tuple[float, float | None]:
 
 
 def early_read(decisions: list[dict], bars, hold_days: int = 5, today: str | None = None,
-               benchmark: str = "SPY") -> dict:
+               benchmark: str = "SPY", events: list[dict] | None = None) -> dict:
     """Early read from every directional rating: sign x (stock - SPY) over the hold window, by day.
     Measurement only; the final verdict still waits for 150 closed trades."""
     from datetime import date
@@ -186,7 +234,8 @@ def early_read(decisions: list[dict], bars, hold_days: int = 5, today: str | Non
             move = 100.0 * (op[i + hold_days] / op[i] - 1)
             mkt = 100.0 * (spy[b] / spy[a] - 1)
             rows.append({"day": d["trade_date"], "rating": d["rating"], "sign": sign,
-                         "move": move, "excess": sign * (move - mkt)})
+                         "move": move, "excess": sign * (move - mkt),
+                         "complete_run": d.get("run_status") == "success"})
         except Exception:
             errors += 1
     out = {"scored": len(rows), "pending": pending, "benchmark": benchmark,
@@ -195,6 +244,12 @@ def early_read(decisions: list[dict], bars, hold_days: int = 5, today: str | Non
                         "ratings as independent, so it overstates certainty, and repeated looks are "
                         "not accounted for. Descriptive only until a validated method replaces it; "
                         "at most a reason to review, never a reason to change the test."}
+    out["inference_status"] = ("pending: no validated test yet; a mean at or below zero does not "
+                               "prove the model has no skill, and a positive one does not prove it has")
+    out["inclusion_rule"] = INCLUSION_RULE
+    out["horizon_sessions"] = hold_days
+    if events is not None:
+        out["missingness"] = missingness(events)
     if errors:
         out["price_errors"] = errors
     if not rows:
@@ -217,6 +272,17 @@ def early_read(decisions: list[dict], bars, hold_days: int = 5, today: str | Non
     if strong and mild:
         out["conviction"] = {"strong_n": len(strong), "strong_mean_pct": round(statistics.fmean(strong), 2),
                              "mild_n": len(mild), "mild_mean_pct": round(statistics.fmean(mild), 2)}
+    full = [r for r in rows if r["complete_run"]]
+    sens = {"scored": len(full), "excluded_from_partial_or_unrecorded_runs": len(rows) - len(full),
+            "note": "same measure on ratings from fully successful runs only; a large gap from the "
+                    "main figure means failures may be biasing it"}
+    if full:
+        fd: dict[str, list[float]] = {}
+        for r in full:
+            fd.setdefault(r["day"], []).append(r["excess"])
+        fm, ft = _day_t(list(fd.values()))
+        sens.update(days=len(fd), mean_excess_pct=round(fm, 2), t_by_day=round(ft, 2) if ft is not None else None)
+    out["complete_runs_only"] = sens
     reached = [c for c in CHECKPOINTS if len(rows) >= c]
     out["checkpoint"] = reached[-1] if reached else None
     if not reached or t is None:

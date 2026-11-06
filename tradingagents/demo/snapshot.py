@@ -301,7 +301,8 @@ def build_snapshot(cfg, *, prices: bool = True, schedule: bool = True, bars=None
                 extras["ratings_score"] = {"error": type(exc).__name__}
             try:
                 extras["early_read"] = early_read(rating_decisions(events), bars,
-                                                  int(getattr(cfg, "hold_days", 5)), today=today)
+                                                  int(getattr(cfg, "hold_days", 5)), today=today,
+                                                  events=events)
             except Exception as exc:
                 extras["early_read"] = {"error": type(exc).__name__}
             if closed:

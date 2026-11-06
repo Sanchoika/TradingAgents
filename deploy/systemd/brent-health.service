@@ -9,4 +9,4 @@ Environment=PYTHONPATH=/root/ta-brent
 Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOME=/root
 # /etc/tradingagents/heartbeat-url holds the external heartbeat URL (mode 600). Optional.
-ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/brent.toml health --ping-file /etc/tradingagents/heartbeat-url
+ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/brent.toml health --notify --ping-file /etc/tradingagents/heartbeat-url

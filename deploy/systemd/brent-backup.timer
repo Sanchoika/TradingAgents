@@ -1,0 +1,9 @@
+[Unit]
+Description=Brent backup nightly at 03:30 New York time
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/New_York
+Persistent=true
+
+[Install]
+WantedBy=timers.target

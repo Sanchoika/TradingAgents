@@ -240,6 +240,14 @@ def cmd_health(args, cfg) -> int:
     nh = news_health(cfg.journal_dir, cfg=cfg)
     bad = overall_health(store.state(), store.is_locked(), nh, datetime.now(UTC))
     print("OK" if not bad else "DEGRADED: " + "; ".join(bad))
+    if args.notify:
+        from tradingagents.ops import notices
+
+        msgs = notices.step(Path(cfg.journal_dir) / "health_notices.json", bad, datetime.now(UTC))
+        if msgs:
+            text = "[BRENT OPS] " + "\n".join(msgs)
+            ok, _ = _sender(cfg)(text)
+            store.write("ops_notice_sent", accepted=ok, text=text)
     if args.ping_file:
         url = Path(args.ping_file).read_text(encoding="utf-8").strip()
         if url:
@@ -448,6 +456,8 @@ def main(argv=None) -> int:
     st = sub.add_parser("stop", help="stop the running monitor (or --news: the news collector)")
     st.add_argument("--news", action="store_true", help="stop the news collector instead")
     h = sub.add_parser("health", help="exit 0 if healthy; optionally ping an external heartbeat")
+    h.add_argument("--notify", action="store_true",
+                   help="send a notice when a problem persists 3 checks, bounded reminders, and recovery")
     h.add_argument("--ping-file", help="file holding the heartbeat URL (never printed)")
     sub.add_parser("report", help="results in four separate parts")
     sub.add_parser("replay", help="same progression over each experiment version (read-only)")

@@ -657,6 +657,51 @@ def test_early_read_removes_market_move_and_calls_checkpoints():
     assert hold["scored"] == 0 and hold["call"] == "too early"
 
 
+def test_ratings_keep_provenance_partial_runs_and_report_missingness():
+    import pandas as pd
+
+    from tradingagents.demo.report import early_read, rating_decisions
+
+    events = [
+        {"event": "run_start", "ts": "2026-01-02T13:00:00", "trade_date": "2026-01-02", "dry_run": False},
+        {"event": "decision", "ticker": "UP", "instrument": "UP", "trade_date": "2026-01-02", "rating": "Buy",
+         "ts": "2026-01-02T13:05:00"},
+        {"event": "error", "ticker": "X"},
+        {"event": "run_end", "trade_date": "2026-01-02", "dry_run": False, "status": "partial",
+         "attempted": 2, "completed": 1, "errored": 1, "fallback": 0},
+        {"event": "run_start", "ts": "2026-01-02T15:00:00", "trade_date": "2026-01-02", "dry_run": False},
+        {"event": "decision", "ticker": "UP", "instrument": "UP", "trade_date": "2026-01-02", "rating": "Sell"},
+        {"event": "run_end", "trade_date": "2026-01-02", "dry_run": False, "status": "success",
+         "attempted": 1, "completed": 1, "errored": 0, "fallback": 0},
+        {"event": "run_start", "ts": "2026-01-05T13:00:00", "trade_date": "2026-01-05", "dry_run": False},
+        {"event": "decision", "ticker": "UP", "instrument": "UP", "trade_date": "2026-01-05", "rating": "Overweight"},
+        {"event": "run_end", "trade_date": "2026-01-05", "dry_run": False, "status": "success",
+         "attempted": 1, "completed": 1, "errored": 0, "fallback": 0},
+        {"event": "run_start", "ts": "2026-01-06T13:00:00", "trade_date": "2026-01-06", "dry_run": False},
+        {"event": "decision", "ticker": "UP", "instrument": "UP", "trade_date": "2026-01-06", "rating": "Buy"},
+    ]
+    d = rating_decisions(events)
+    # the partial run's good rating is kept; the same-day re-run is ignored (first rating counts)
+    assert [(x["trade_date"], x["rating"], x["run_status"], x["conviction"]) for x in d] == [
+        ("2026-01-02", "Buy", "partial", "strong"), ("2026-01-05", "Overweight", "success", "mild"),
+        ("2026-01-06", "Buy", "incomplete", "strong")]
+    assert d[0]["ts"] == "2026-01-02T13:05:00" and d[0]["run"] == "2026-01-02T13:00:00"
+
+    days = pd.bdate_range("2026-01-02", periods=30)
+
+    def bars(symbol, as_of):
+        step = {"SPY": 1.0, "UP": 2.0}[symbol]
+        return pd.DataFrame({"Date": days, "Open": [100.0 + step * i for i in range(30)]})
+
+    out = early_read(d, bars, hold_days=5, today="2026-03-01", events=events)
+    assert out["scored"] == 3 and out["complete_runs_only"]["scored"] == 1
+    assert out["complete_runs_only"]["excluded_from_partial_or_unrecorded_runs"] == 2
+    assert out["inference_status"].startswith("pending") and "first such rating" in out["inclusion_rule"]
+    m = out["missingness"]
+    assert m["runs"] == 4 and m["runs_by_status"] == {"partial": 1, "success": 2, "incomplete": 1}
+    assert m["missing"] == 1 and m["missing_share"] == 0.25
+
+
 def _nyse_rule_holidays(year: int) -> set[str]:
     """NYSE full closures from the published rules, independent of the hard-coded table."""
     from datetime import date, timedelta
@@ -780,3 +825,17 @@ def test_one_failure_out_of_three_is_partial_and_the_watchdog_says_so(tmp_path):
     assert failed_run(j.events())["status"] == "partial"
     # older run_end rows without a status still read correctly
     assert failed_run([{"event": "run_end", "trade_date": "d", "ok": True}]) is None
+
+
+def test_rerunning_the_same_day_does_not_duplicate_orders(tmp_path):
+    # missed-run guard / retry safety: a second run for the same date must not open the same trade twice
+    p = Prices()
+    b = _broker(tmp_path, p)
+    cfg = DemoConfig(mode="earnings", universe=["AAA"], journal_dir=str(tmp_path))
+    j = Journal(tmp_path)
+    kw = {"earnings": lambda t: [pd.Timestamp("2026-11-02T21:00:00Z")],
+          "now": datetime(2026, 11, 3, 13, tzinfo=UTC), "edgar": lambda t: []}
+    run_once(b, fixed_analyzer("Buy"), cfg, j, "2026-11-03", **kw)
+    run_once(b, fixed_analyzer("Buy"), cfg, j, "2026-11-03", **kw)
+    opens = [e for e in j.events() if e["event"] == "open"]
+    assert len(opens) == 1
