@@ -43,6 +43,8 @@ ARM_DIFFERENCES = (
 
 def group_of(sg: dict, accepted: set | None = None) -> str:
     """Reporting group: arm, then (combined) label and whether it was actually sent."""
+    if sg.get("arm") == "family":
+        return f"research family {(sg.get('setup') or {}).get('kind', '?')} (paper only)"
     if sg.get("arm", "combined") != "combined":
         return "chart-only (shadow, not sent)"
     label = sg.get("label") or "unlabelled"

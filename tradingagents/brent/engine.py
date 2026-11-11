@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import chart, info, messages, news, rules
+from . import chart, families, info, messages, news, rules
 from .client import OandaReadError, Quote
 from .config import PAPER_RULES_VERSION, RULES_VERSION, BrentConfig, code_commit, manifest
 from .rules import LONG, Setup
@@ -312,6 +312,8 @@ class Monitor:
         for b in new:
             close_t = b["time"] + M15
             self.on_bar(b, close_t, pd["h"], pd["l"], a, day)
+            if self.cfg.research_families:
+                self.guard_families(self.on_family_bar, b, close_t, a)
             self.st["last_bar_time"] = _iso(b["time"])
         self.st["context_error"] = None
         if new:
@@ -398,8 +400,12 @@ class Monitor:
             self.check_range(q, now)
         self.update_signals(q, now)
         self.expire_setups(now)
+        if self.cfg.research_families:
+            self.guard_families(self.expire_families, now)
         if q is not None:
             self.try_alerts(q, self.now())
+            if self.cfg.research_families:
+                self.guard_families(self.try_families, q, self.now())
             self.notify_watches(q, self.now())
         self.end_watches(self.now())
         self.flush_outbox(self.now())
@@ -726,18 +732,21 @@ class Monitor:
             if arm == "combined":
                 self.log_suppressed(s, ["final check: " + b for b in blockers])
             return
-        prefix, counter = ("BR", "seq") if arm == "combined" else ("SH", "seq_shadow")
+        prefix, counter = ("BR", "seq") if arm == "combined" else \
+            ("RF", "seq_family") if arm == "family" else ("SH", "seq_shadow")
         self.st[counter] = self.st.get(counter, 0) + 1
         sig_id = f"{prefix}-{rules.ny(now):%Y%m%d}-{self.st[counter]:03d}"
         entry = rules.executable(s.direction, q.bid, q.ask)
         plan = rules.plan(s, entry, q.spread, self.cfg)
         sig = {
             "id": sig_id, "arm": arm, "telegram": telegram, "instrument": self.cfg.instrument,
-            "rules": RULES_VERSION, "config_hash": self.cfg.config_hash(), "setup": s.to_dict(),
+            "rules": families.FAMILIES_VERSION if arm == "family" else RULES_VERSION,
+            "config_hash": self.cfg.config_hash(), "setup": s.to_dict(),
             "quote": {"bid": q.bid, "ask": q.ask, "spread": round(q.spread, 4), "time": _iso(q.time),
                       "fetched_at": _iso(q.fetched_at), "rtt": round(q.rtt, 3)},
             "alert_mid": q.mid, "plan": plan, "decided_at": _iso(now), "expires_at": _iso(expires),
-            "status": "valid", "why": self.why(s), "skip_reasons": self.skip_reasons(s, q, now),
+            "status": "valid", "why": self.family_why(s) if arm == "family" else self.why(s),
+            "skip_reasons": self.skip_reasons(s, q, now),
             "position_note": self.position_note(s.direction), "sizing": self.sizing(s, entry, q),
             "paper": {"state": "waiting"}, "marks": {},
             "experiment": self.manifest, "paper_rules": PAPER_RULES_VERSION,
@@ -795,9 +804,120 @@ class Monitor:
         sd["research_call_id"] = sig["id"]
         text = messages.research_text(sig, grade, reason, {"max_hold_hours": self.cfg.max_hold_hours})
         ok, secs, _ = self.send(text, "research", sig["id"])
+        self._count_research_card()
         sig.update(research_call={"grade": grade, "reason": reason, "sent": ok})
         self.store.write("research_call", id=sig["id"], key=sd.get("key"), grade=grade, reason=reason,
                          ok=ok, send_seconds=round(secs, 3))
+
+    # ------------------------------------------------- research families v1 (paper + calls only)
+    def family_why(self, s: Setup) -> str:
+        return (f"{s.kind} setup armed {messages.stamp(_dt(s.armed_at))}: zone {s.zone_lo:.2f}-{s.zone_hi:.2f}, "
+                f"stop {s.stop:.2f}; a 15-min close beyond {s.invalid_close:.2f} cancels it. Frozen rules "
+                f"{families.FAMILIES_VERSION} (docs/brent-research-families-v1.md); unproven, paper only.")
+
+    def _count_research_card(self):
+        day = rules.ny(self.now()).date().isoformat()
+        c = self.st.setdefault("research_cards", {"day": day, "n": 0})
+        if c["day"] != day:
+            c.update(day=day, n=0)
+        c["n"] += 1
+
+    def guard_families(self, fn, *args):
+        """Research families must never stop monitoring or block the existing family (like the info lane)."""
+        try:
+            fn(*args)
+        except Exception as exc:
+            self.store.write("family_error", where=fn.__name__, error=f"{type(exc).__name__}: {exc}"[:300])
+
+    def on_family_bar(self, bar: dict, close_t: datetime, a: float):
+        fam = self.st.setdefault("family_setups", {})
+        # Own buffer of recent 15-min candles (ORB needs its opening range for 2.5 h).
+        buf = self.st.setdefault("family_bars", [])
+        if not buf or _dt(buf[-1]["time"]) < bar["time"]:
+            buf.append({**{k: bar[k] for k in ("o", "h", "l", "c")}, "time": _iso(bar["time"])})
+            del buf[:-24]
+        bars = [{**x, "time": _dt(x["time"])} for x in buf]
+        seen = self.st.setdefault("family_seen", [])
+        for s in fam.values():
+            if s["status"] != "armed":
+                continue
+            reason = rules.close_invalidates(_setup(s), bar)
+            if reason:
+                s["status"] = "invalidated"
+                s["end_reason"] = reason
+                self.store.write("family_end", key=s["key"], status="invalidated", reason=reason)
+        for s in families.detect(bar, close_t, bars, a, self.daily, self.cfg.family_arm_hours):
+            if s.key in seen:
+                continue
+            seen.append(s.key)
+            del seen[:-500]
+            fam[s.key] = s.to_dict()
+            self.store.write("family_setup", key=s.key, family=s.kind, setup=s.to_dict(),
+                             version=families.FAMILIES_VERSION)
+
+    def expire_families(self, now: datetime):
+        fam = self.st.setdefault("family_setups", {})
+        for s in fam.values():
+            if s["status"] == "armed" and now >= _dt(s["expires_at"]):
+                s["status"] = "expired"
+                self.store.write("family_end", key=s["key"], status="expired")
+        cutoff = now - timedelta(days=1)
+        self.st["family_setups"] = {k: s for k, s in fam.items()
+                                    if s["status"] == "armed" or _dt(s["armed_at"]) > cutoff}
+
+    def try_families(self, q: Quote, now: datetime):
+        """Armed family setups in their zone become research signals (paper tracked). Families that
+        fire together in one direction share ONE research card; capped per New York day."""
+        made: dict[str, list[dict]] = {}
+        for sd in list(self.st.setdefault("family_setups", {}).values()):
+            if sd["status"] != "armed":
+                continue
+            s = _setup(sd)
+            if not rules.in_zone(s, q.bid, q.ask):
+                continue
+            if rules.entry_blockers(s, q.bid, q.ask, q.time, q.tradeable, now, self.cfg) or self.chart_problem(now):
+                continue
+            before = sd.get("shadow_id")
+            self.issue(s, sd, arm="family")
+            sig = self.st["signals"].get(sd.get("shadow_id") or "")
+            if sig and sd.get("shadow_id") != before:
+                sd["status"] = "signalled"
+                made.setdefault(s.direction, []).append(sig)
+        for direction, sigs in made.items():
+            self._family_card(direction, sigs, now)
+
+    def _family_card(self, direction: str, sigs: list[dict], now: datetime):
+        if not self.cfg.research_calls or not self.cfg.alerts_enabled:
+            return
+        recent = now - timedelta(minutes=15)
+        for o in self.st["signals"].values():
+            if o["setup"]["direction"] != direction or o in sigs:
+                continue
+            carded = o.get("research_call") or o.get("family_card") or (o.get("arm") == "combined" and o.get("delivered"))
+            if carded and _dt(o["decided_at"]) >= recent:
+                self.store.write("family_card_skipped", ids=[x["id"] for x in sigs], reason="a card in that direction in the last 15 min")
+                return
+        day = rules.ny(now).date().isoformat()
+        c = self.st.setdefault("research_cards", {"day": day, "n": 0})
+        if c["day"] != day:
+            c.update(day=day, n=0)
+        if c["n"] >= self.cfg.research_call_cap:
+            self.store.write("family_card_skipped", ids=[x["id"] for x in sigs], reason=f"daily cap {self.cfg.research_call_cap}")
+            return
+        try:
+            nv = self.news_view(now)
+        except Exception as exc:
+            nv = {"state": "unavailable", "why": str(exc)}
+        grade, reason = families.grade(nv, direction)
+        names = [x["setup"]["kind"] for x in sigs]
+        text = messages.research_text(sigs[0], grade, reason, {"max_hold_hours": self.cfg.max_hold_hours},
+                                      families=names, others=sigs[1:])
+        ok, secs, _ = self.send(text, "research", sigs[0]["id"])
+        self._count_research_card()
+        for x in sigs:
+            x["family_card"] = {"grade": grade, "sent": ok, "with": [y["id"] for y in sigs]}
+        self.store.write("research_call", id=sigs[0]["id"], ids=[x["id"] for x in sigs], families=names,
+                         grade=grade, reason=reason, ok=ok, send_seconds=round(secs, 3))
 
     def explain(self, s: Setup, a: dict, sig_id: str) -> dict:
         """One sentence each for news and chart, plus the main contradiction."""
