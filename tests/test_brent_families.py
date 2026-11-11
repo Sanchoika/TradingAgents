@@ -26,7 +26,7 @@ def daily_up(n=25):
 
 
 def test_eia_reaction_fires_only_on_the_wednesday_1030_candle_with_a_decisive_close():
-    t = datetime(2026, 11, 11, 15, 30, tzinfo=UTC)          # Wed 10:30 ET (EST)
+    t = datetime(2026, 11, 18, 15, 30, tzinfo=UTC)          # Wed 10:30 ET (EST), a normal week
     b = bar(t, 100.0, 101.0, 99.9, 100.95)                    # range 1.1 >= 0.25*A, close in top 30%
     s = families.detect(b, t + timedelta(minutes=15), [b], A, None, 2)
     assert [(x.kind, x.direction) for x in s] == [("EIA_REACTION", LONG)]
@@ -154,3 +154,17 @@ def test_orb_keeps_its_opening_range_for_the_whole_window_and_family_errors_neve
     mon.guard_families(boom)
     assert any(e["event"] == "family_error" and "family bug" in e["error"] for e in store.events())
     mon.tick()                                                           # the bot keeps running
+
+
+def test_eia_holiday_week_uses_the_shifted_release_veterans_day_2026():
+    wed = datetime(2026, 11, 11, 15, 30, tzinfo=UTC)          # Wed 11 Nov 10:30 ET: no release (holiday)
+    assert families.detect(bar(wed, 100, 101, 99.9, 100.95), wed + timedelta(minutes=15), [], A, None, 2) == []
+    thu = datetime(2026, 11, 12, 17, 0, tzinfo=UTC)            # Thu 12 Nov 12:00 ET: the shifted release
+    s = families.detect(bar(thu, 100, 101, 99.9, 100.95), thu + timedelta(minutes=15), [], A, None, 2)
+    assert [(x.kind, x.direction) for x in s] == [("EIA_REACTION", LONG)]
+    thu1030 = datetime(2026, 11, 12, 15, 30, tzinfo=UTC)
+    assert families.detect(bar(thu1030, 100, 101, 99.9, 100.95), thu1030, [], A, None, 2) == []
+    xmas = datetime(2025, 12, 29, 22, 0, tzinfo=UTC)           # Mon 29 Dec 2025 17:00 ET (shifted)
+    assert families.eia_release_candle(families.ny(xmas)) and not families.eia_release_candle(
+        families.ny(datetime(2025, 12, 24, 15, 30, tzinfo=UTC)))
+    assert families.eia_release_candle(families.ny(datetime(2026, 11, 18, 15, 30, tzinfo=UTC)))   # normal week

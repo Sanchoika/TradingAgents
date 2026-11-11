@@ -18,11 +18,13 @@ Written and frozen on **2026-11-11, before looking at any results**. Nothing her
 
 ## EIA_REACTION
 
-- **Trigger:** the 15-minute candle starting **10:30 ET on a Wednesday** (the standard EIA weekly release).
-- **Cannot fire:**
-  - candle range < 0.25 × a;
-  - close in the middle 40% of the candle.
-  - **Known limit:** in holiday weeks the release moves (the bot does not know the shifted dates), so a holiday Wednesday may trigger without a release, and the shifted release is missed.
+- **Trigger:** the EIA weekly release candle: the 15-minute candle starting **10:30 ET on a Wednesday**, or, in a **holiday week**, the candle starting at the **shifted release time**.
+  - The shifts come from EIA's schedule page, the same source NORTH 5.0 reads. They are kept in `families.EIA_SHIFTS` (all published 2025–2026 shifts, e.g. Veterans Day 2026: Wed 11 Nov → **Thu 12 Nov 12:00 ET**).
+  - In a shifted week the standard Wednesday 10:30 candle does **not** trigger.
+  - When this was written, EIA had published shifts only through 2026-11-12. A week with an unknown shift uses Wednesday 10:30.
+  - Adding later shifts is a rule change: v1.1, and this family's count restarts.
+  - *(Amended 2026-11-11, still before any results, at the coordinator's review: the first draft used only Wednesday 10:30.)*
+- **Cannot fire:** candle range < 0.25 × a, or close in the middle 40% of the candle.
 - **LONG:** close in the top 30%.
   - zone [close − z, close];
   - stop = candle low − 0.05 × a;

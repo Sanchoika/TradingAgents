@@ -14,6 +14,26 @@ from .rules import LONG, SHORT, Setup, ny, previous_day
 FAMILIES = ("EIA_REACTION", "ORB_LONDON", "ORB_NY", "RANGE_REVERSAL", "TREND_PULLBACK")
 FAMILIES_VERSION = "families-v1"
 SESSIONS = (("ORB_LONDON", 3), ("ORB_NY", 9))   # opening range: the first 30 min after HH:00 ET
+# EIA weekly release shifts (holiday weeks), from the EIA schedule page (the same source NORTH 5.0 reads),
+# keyed by the standard release Wednesday -> actual release (New York time). EIA had published shifts only
+# through 2026-11-12 when this was written; an unknown week uses Wednesday 10:30 ET. Update when EIA
+# publishes more (a rule change: families-v1 -> v1.1, that family's count restarts).
+EIA_SHIFTS = {
+    "2024-12-31": "2025-01-02T11:00", "2025-01-22": "2025-01-23T12:00", "2025-02-19": "2025-02-20T12:00",
+    "2025-05-28": "2025-05-29T12:00", "2025-09-03": "2025-09-04T12:00", "2025-10-15": "2025-10-16T12:00",
+    "2025-11-12": "2025-11-13T12:00", "2025-12-24": "2025-12-29T17:00", "2026-01-21": "2026-01-22T12:00",
+    "2026-02-18": "2026-02-19T12:00", "2026-05-27": "2026-05-28T12:00", "2026-09-09": "2026-09-10T12:00",
+    "2026-10-14": "2026-10-15T12:00", "2026-11-11": "2026-11-12T12:00",
+}
+
+
+def eia_release_candle(t: datetime) -> bool:
+    """True if the 15-min candle starting at New York time t is the EIA release candle."""
+    stamp = t.strftime("%Y-%m-%dT%H:%M")
+    if stamp in EIA_SHIFTS.values():
+        return True
+    wed = (t - timedelta(days=(t.weekday() - 2) % 7)).date().isoformat()   # this week's Wednesday
+    return t.weekday() == 2 and (t.hour, t.minute) == (10, 30) and wed not in EIA_SHIFTS
 
 
 def detect(bar: dict, close_t: datetime, bars: list[dict], a: float, daily: list[dict] | None,
@@ -35,8 +55,8 @@ def detect(bar: dict, close_t: datetime, bars: list[dict], a: float, daily: list
                      atr=a, armed_at=close_t.isoformat(), expires_at=expires, trigger=trig)
 
     rng, mid = bar["h"] - bar["l"], (bar["h"] + bar["l"]) / 2
-    # EIA_REACTION: the 10:30 ET Wednesday candle (standard release time only).
-    if t.weekday() == 2 and (t.hour, t.minute) == (10, 30) and rng >= 0.25 * a:
+    # EIA_REACTION: the release candle (Wednesday 10:30 ET, or the shifted time in a holiday week).
+    if eia_release_candle(t) and rng >= 0.25 * a:
         pos = (bar["c"] - bar["l"]) / rng
         if pos >= 0.7:
             out.append(mk("EIA_REACTION", LONG, bar["c"] - z, bar["c"], bar["l"] - 0.05 * a, mid, "EIA", mid))
