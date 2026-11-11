@@ -17,9 +17,11 @@ RULES_VERSION = "brent-v1"
 # brent-exp-2 (2026-11-03 audit fixes): news rechecked during the entry window, chart data
 # must be fresh, news coverage counted by source function, paper exits on the executable
 # side with adverse gap fills, retries of pending news analysis.
-EXPERIMENT_VERSION = "brent-exp-3"  # exp-3 (2026-11-05): range 80-115, 250 calls/24h, 12/h
+# brent-exp-4 (2026-11-11, Irakli approved "yes gates"): news unavailable = neutral (news-policy-v3);
+# server config max_spread 0.08 -> 0.12 (~1.5x typical 0.081), max_quote_age_seconds 10 -> 30. Restarts the count.
+EXPERIMENT_VERSION = "brent-exp-4"  # exp-3 (2026-11-05): range 80-115, 250 calls/24h, 12/h
 CHART_POLICY_VERSION = "chart-v1"       # chart.py regime/room definitions
-NEWS_POLICY_VERSION = "news-policy-v2"  # news.py coverage + policy table
+NEWS_POLICY_VERSION = "news-policy-v3"  # v3 (2026-11-11): news unavailable = neutral (chart-led if with-trend)
 PAPER_RULES_VERSION = "paper-v2"        # engine.py paper fills/exits
 
 # Fields that define the signal and paper-fill rules. Changing any of them changes the

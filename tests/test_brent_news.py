@@ -191,7 +191,9 @@ def test_news_state_distinguishes_none_from_unavailable():
      ("LONG", "news-supported, counter-trend")),
     ("LONG", "up", "BREAKOUT", {"state": "none_material", "conflict_window": {"bearish": ["b"]}},
      ("NO TRADE", "")),
-    ("SHORT", "down", "BREAKOUT", {"state": "unavailable"}, ("WATCH", "")),
+    ("SHORT", "down", "BREAKOUT", {"state": "unavailable"}, ("SHORT", "chart-led, news unavailable")),
+    ("SHORT", "up", "BREAKOUT", {"state": "unavailable"}, ("WATCH", "")),
+    ("SHORT", "range", "FAILED_BREAK", {"state": "unavailable"}, ("WATCH", "")),
     ("SHORT", "down", "BREAKOUT", {"state": "mixed"}, ("WATCH", "")),
 ])
 def test_policy_rows(direction, regime, kind, state, expect):

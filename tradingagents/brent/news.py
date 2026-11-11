@@ -588,7 +588,12 @@ def policy(direction: str, regime: str, setup_kind: str, news: dict) -> dict:
     with_trend = regime == ("up" if direction == "LONG" else "down")
     st = news["state"]
     if st == "unavailable":
-        return {"action": "WATCH", "row": "evidence missing", "label": ""}
+        # news-policy-v3 (2026-11-11, Irakli approved): missing news evidence is neutral, not a block.
+        # A with-trend chart setup goes out chart-led; counter-trend still needs news support.
+        if with_trend:
+            return {"action": direction, "row": "no-news (news unavailable)",
+                    "label": "chart-led, news unavailable"}
+        return {"action": "WATCH", "row": "counter-trend, news unavailable", "label": ""}
     if news.get("conflict_window", {}).get(against):
         return {"action": "NO TRADE", "row": "conflict", "label": ""}
     if st == "mixed":
