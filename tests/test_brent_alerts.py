@@ -486,9 +486,11 @@ def test_conflicting_news_blocks_but_chart_only_arm_records(tmp_path):
     clock.advance(25)
     mon.tick()  # the shadow trade is paper-tracked, never messaged
     assert any(e["event"] == "paper_fill" and e["id"] == "SH-20261103-001" for e in store.events())
-    # Only one WATCH (the blocker is the conflicting news); the shadow trade is never messaged.
-    assert len(sender.texts) == 1 and "<b>BRENT WATCH" in sender.texts[0]
-    assert "NOT AN ENTRY" in sender.texts[0] and "conflict" in sender.texts[0]
+    # One graded RESEARCH CALL for the setup (grade C: news conflicts) plus the WATCH card; no entry alert.
+    calls = [t for t in sender.texts if "RESEARCH CALL" in t]
+    watches = [t for t in sender.texts if "<b>BRENT WATCH" in t]
+    assert len(calls) == 1 and "C · news conflicts (conflict)" in calls[0] and "NOT AN ALERT" in calls[0]
+    assert len(watches) == 1 and "NOT AN ENTRY" in watches[0] and "conflict" in watches[0]
 
 
 def test_news_unavailable_or_failing_is_neutral_chart_led_alert(tmp_path):
@@ -905,3 +907,47 @@ def test_progression_counts_only_usable_evidence_and_accepted_watches():
     assert p["evidence_ready"] == 1 and p["evidence_ready_unknown"] == 0
     assert p["watch_messages_sent"] == 1 and p["watch_send_attempts_failed"] == 2
     assert p["watch_messages_unique_watches"] == 1
+
+
+# ---------------------------------------------------------------------- research calls and grades (2026-11-11)
+def test_research_call_sent_once_per_setup_and_never_with_a_real_alert(tmp_path):
+    bear = {**SUPPORT_ITEM, "bias": "bearish", "window": "conflict"}
+    view = {**NO_NEWS, "state": "none_material", "conflict_window": {"bearish": ["k1"]}, "items": [bear]}
+    mon, client, sender, clock, store = make(tmp_path, news_view=NewsFake(view))
+    mon.tick()
+    clock.advance(60)
+    mon.tick()
+    clock.advance(60)
+    mon.tick()
+    calls = [e for e in store.events() if e["event"] == "research_call"]
+    assert len(calls) == 1 and calls[0]["grade"] == "C" and calls[0]["ok"] is True
+    assert len([t for t in sender.texts if "RESEARCH CALL" in t]) == 1
+
+    # A with-trend chart setup and no news: a real alert (grade B) and no research call.
+    m2, _, s2, _, st2 = make(tmp_path / "b")
+    m2.tick()
+    assert len(alerts(s2)) == 1 and "Grade" in alerts(s2)[0] and "B · chart only" in alerts(s2)[0]
+    assert not [t for t in s2.texts if "RESEARCH CALL" in t]
+    assert not [e for e in st2.events() if e["event"] == "research_call"]
+
+
+def test_grade_a_on_news_supported_alert_and_research_calls_can_be_switched_off(tmp_path):
+    view = {**NO_NEWS, "state": "bullish", "support": {"bullish": ["k1"]}, "items": [SUPPORT_ITEM]}
+    mon, _, sender, _, _ = make(tmp_path, news_view=NewsFake(view))
+    mon.tick()
+    assert len(alerts(sender)) == 1 and "A · chart and news agree" in alerts(sender)[0]
+    bear = {**SUPPORT_ITEM, "bias": "bearish", "window": "conflict"}
+    conflict = {**NO_NEWS, "state": "none_material", "conflict_window": {"bearish": ["k1"]}, "items": [bear]}
+    m2, _, s2, _, st2 = make(tmp_path / "off", news_view=NewsFake(conflict), research_calls=False)
+    m2.tick()
+    assert not [t for t in s2.texts if "RESEARCH CALL" in t]
+    assert any(e["event"] == "signal" and e["arm"] == "chart-only" for e in st2.events())  # research track unchanged
+
+
+def test_grade_of_rows():
+    from tradingagents.brent.engine import grade_of
+    g = lambda row, action="WATCH", label="": grade_of({"policy": {"row": row, "action": action, "label": label}}, "LONG")[0]
+    assert g("conflict", "NO TRADE") == "C" and g("mixed") == "C"
+    assert g("agree", "LONG", "news-supported") == "A" and g("agree, counter-trend", "LONG", "news-supported, counter-trend") == "A"
+    assert g("no-news", "LONG", "chart-led, no material news") == "B" and g("counter-trend without support") == "B"
+    assert g("no-news (news unavailable)", "LONG", "chart-led, news unavailable") == "B"

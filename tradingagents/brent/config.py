@@ -90,6 +90,9 @@ class BrentConfig:
     # Information lane (INFO): context messages, never trade suggestions. Off = computed and
     # logged as shadow, not sent. Caps are per New York day.
     info_alerts: bool = False
+    # Research calls (2026-11-11, Irakli): every chart setup that does not become a real alert is
+    # sent once as a graded RESEARCH CALL card (not confirmed by news; information, not an entry).
+    research_calls: bool = True
     info_briefs_et: list[str] = field(default_factory=lambda: ["07:00", "12:00"])
     info_per_day: int = 4             # non-urgent INFO per day, including the briefs
     info_brief_slots: int = 2         # of info_per_day, kept for the scheduled briefs

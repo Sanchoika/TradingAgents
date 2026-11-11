@@ -64,6 +64,15 @@ def _dt(text: str) -> datetime:
     return datetime.fromisoformat(text)
 
 
+def grade_of(a: dict, direction: str) -> tuple[str, str]:
+    """A = chart and news agree; B = chart only, no conflicting news; C = news conflicts."""
+    pol = a["policy"]
+    if pol["row"] in ("conflict", "mixed"):
+        return "C", f"news conflicts ({pol['row']})"
+    if pol["action"] == direction and "news-supported" in (pol.get("label") or ""):
+        return "A", "chart and news agree"
+    return "B", f"chart only, no conflicting news ({pol['row']})"
+
 class Monitor:
     def __init__(self, cfg: BrentConfig, client, store: Store,
                  send: Callable[[str], tuple[bool, float]],
@@ -522,12 +531,16 @@ class Monitor:
             a = self.assess(s, q, now)
             self.log_candidate(s, a)
             if a["policy"]["action"] != s.direction:
+                self.research_call(sd, a, s.direction)
                 continue  # WATCH / NO TRADE: the setup stays armed; news or chart may change
             blockers = self.global_blockers(now)
             if blockers:
                 self.log_suppressed(s, blockers)
+                self.research_call(sd, a, s.direction)
                 continue
             self.issue(s, sd, arm="combined", assessment=a)
+            if sd.get("status") != "alerted":
+                self.research_call(sd, a, s.direction)
             return
 
     # ------------------------------------------------------------ WATCH notices
@@ -731,6 +744,9 @@ class Monitor:
         }
         if assessment:
             sig.update(self.explain(s, assessment, sig_id))
+            sig["grade"], sig["grade_reason"] = grade_of(assessment, s.direction)
+        if arm == "combined" and sd.get("research_call_id"):
+            sig["from_research"] = sd["research_call_id"]
         self.store.write("signal", **{k: v for k, v in sig.items() if k != "paper"})
         if arm == "combined":
             sd["status"] = "alerted"
@@ -738,6 +754,8 @@ class Monitor:
             if self.report_pages:
                 self.write_signal_page(sig)
         self.st["signals"][sig_id] = sig
+        if arm != "combined":
+            sd["shadow_id"] = sig_id
         if not telegram:
             # Not sent (chart-only comparison, or alerts disabled): tracked on paper with the
             # same human-latency rule, the clock starting at the decision. Never "delivered".
@@ -763,6 +781,23 @@ class Monitor:
         left = (expires - done).total_seconds()
         if left < self.cfg.human_latency_seconds:
             self.invalidate(sig, f"Telegram delivery took {secs:.0f}s, only {left:.0f}s left")
+
+    def research_call(self, sd: dict, a: dict, direction: str):
+        """Send the setup's chart-only signal once as a graded RESEARCH CALL (never twice; never when
+        it already became a real alert). Information only; paper tracking is unchanged."""
+        if sd.get("research_call_id") or sd.get("status") == "alerted" or not self.cfg.research_calls \
+                or not self.cfg.alerts_enabled:
+            return
+        sig = self.st["signals"].get(sd.get("shadow_id") or "")
+        if not sig or sig.get("status") != "valid":
+            return
+        grade, reason = grade_of(a, direction)
+        sd["research_call_id"] = sig["id"]
+        text = messages.research_text(sig, grade, reason, {"max_hold_hours": self.cfg.max_hold_hours})
+        ok, secs, _ = self.send(text, "research", sig["id"])
+        sig.update(research_call={"grade": grade, "reason": reason, "sent": ok})
+        self.store.write("research_call", id=sig["id"], key=sd.get("key"), grade=grade, reason=reason,
+                         ok=ok, send_seconds=round(secs, 3))
 
     def explain(self, s: Setup, a: dict, sig_id: str) -> dict:
         """One sentence each for news and chart, plus the main contradiction."""
