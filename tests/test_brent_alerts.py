@@ -946,7 +946,10 @@ def test_grade_a_on_news_supported_alert_and_research_calls_can_be_switched_off(
 
 def test_grade_of_rows():
     from tradingagents.brent.engine import grade_of
-    g = lambda row, action="WATCH", label="": grade_of({"policy": {"row": row, "action": action, "label": label}}, "LONG")[0]
+
+    def g(row, action="WATCH", label=""):
+        return grade_of({"policy": {"row": row, "action": action, "label": label}}, "LONG")[0]
+
     assert g("conflict", "NO TRADE") == "C" and g("mixed") == "C"
     assert g("agree", "LONG", "news-supported") == "A" and g("agree, counter-trend", "LONG", "news-supported, counter-trend") == "A"
     assert g("no-news", "LONG", "chart-led, no material news") == "B" and g("counter-trend without support") == "B"
