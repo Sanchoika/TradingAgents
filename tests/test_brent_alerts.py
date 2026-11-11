@@ -491,21 +491,22 @@ def test_conflicting_news_blocks_but_chart_only_arm_records(tmp_path):
     assert "NOT AN ENTRY" in sender.texts[0] and "conflict" in sender.texts[0]
 
 
-def test_news_unavailable_or_failing_means_watch(tmp_path):
+def test_news_unavailable_or_failing_is_neutral_chart_led_alert(tmp_path):
+    # news-policy-v3 (2026-11-11): missing news evidence no longer blocks a with-trend chart setup.
     mon, client, sender, clock, store = make(
         tmp_path, news_view=NewsFake({"state": "unavailable", "why": "3 recent items not analysed yet"}))
     mon.tick()
-    assert alerts(sender) == []
+    assert len(alerts(sender)) == 1 and "LONG BRENT" in alerts(sender)[0]
+    cand = [e for e in store.events() if e["event"] == "candidate"][0]
+    assert cand["action"] == "LONG" and cand["row"] == "no-news (news unavailable)"
 
     def boom(_):
         raise RuntimeError("log unreadable")
 
     mon2, _, sender2, _, store2 = make(tmp_path / "b", news_view=boom)
     mon2.tick()
-    assert alerts(sender2) == []
-    cand = [e for e in store2.events() if e["event"] == "candidate"][0]
-    assert cand["action"] == "WATCH" and cand["row"] == "evidence missing"
-
+    cand2 = [e for e in store2.events() if e["event"] == "candidate"][0]
+    assert cand2["row"] == "no-news (news unavailable)" and len(alerts(sender2)) == 1
 
 def test_range_regime_needs_news_and_counter_trend_needs_failed_break(tmp_path):
     mon, client, sender, clock, store = make(tmp_path)
@@ -579,7 +580,7 @@ def test_report_and_page(tmp_path):
     assert res["operational"]["signals_issued"] == 1
     groups = res["paper_hypothetical"]["by_group"]
     (g, stats), = groups.items()
-    assert g == "brent-exp-3 | combined chart-led | sent (notify command accepted) | paper-v2"
+    assert g == "brent-exp-4 | combined chart-led | sent (notify command accepted) | paper-v2"
     assert stats["closed"] == 1 and stats["net_r_mean"] > 1
     assert res["manual_confirmed"]["records"] == 0
     assert "NOT a measure of news's contribution" in res["chart_only_comparison"]["differences_from_combined"]

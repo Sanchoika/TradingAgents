@@ -198,11 +198,11 @@ def test_signal_and_start_carry_experiment_manifest(tmp_path):
     mon.tick()
     sig = [e for e in store.events() if e["event"] == "signal"][0]
     m = sig["experiment"]
-    assert m["experiment"] == "brent-exp-3" and m["news_policy"] == "news-policy-v2"
+    assert m["experiment"] == "brent-exp-4" and m["news_policy"] == "news-policy-v3"
     assert m["model"] == "chatgpt:gpt-6-luna" and m["prompt_hash"] == news.prompt_hash()
     assert m["code_commit"] and m["experiment_hash"]
     start = [e for e in store.events() if e["event"] == "start"][0]
-    assert start["manifest"]["experiment"] == "brent-exp-3"
+    assert start["manifest"]["experiment"] == "brent-exp-4"
     assert "entry alerts ON" in sender.texts[0]
 
 
@@ -271,7 +271,7 @@ def test_monitor_notices_stopped_news_collector(tmp_path):
     assert any(e["event"] == "ops" and "news collector is not running" in e["text"]
                for e in mon.store.events())
     assert mon.st["news_process"]["running"] is False
-    assert alerts(sender) == []   # no news -> WATCH
+    assert len(alerts(sender)) == 1   # news-policy-v3: no news is neutral -> chart-led alert (with trend)
     del clock_t
 
 

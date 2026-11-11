@@ -40,7 +40,8 @@ def test_live_window_revoked_when_news_becomes_unavailable(tmp_path):
     m.news_view = NewsFake({'state':'unavailable', 'why':'new material story not classified', 'items':[]})
     clock.advance(25)
     m.tick()
-    assert m.st['signals']['BR-20261103-001']['paper']['state'] != 'open', 'Paper entry occurred after required news assessment became unavailable'
+    # news-policy-v3 (2026-11-11): news becoming unavailable is neutral, so a with-trend alert stays valid and fills.
+    assert m.st['signals']['BR-20261103-001']['paper']['state'] == 'open'
 
 def test_failed_chart_refresh_blocks_entry(tmp_path):
     m,c,send,clock,store = make(tmp_path)
