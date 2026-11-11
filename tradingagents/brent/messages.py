@@ -109,7 +109,8 @@ def alert_text(sig: dict, extra: dict) -> str:
                 f"paper · NO ORDER PLACED · {sig['id']}", details, url=sig.get("report_url", ""))
 
 
-def research_text(sig: dict, grade: str, reason: str, extra: dict) -> str:
+def research_text(sig: dict, grade: str, reason: str, extra: dict, families: list[str] | None = None,
+                  others: list[dict] | None = None) -> str:
     """RESEARCH CALL card: a chart setup that is NOT a confirmed alert (grade B or C)."""
     s, q, p = sig["setup"], sig["quote"], sig["plan"]
     long_ = s["direction"] == LONG
@@ -129,8 +130,14 @@ def research_text(sig: dict, grade: str, reason: str, extra: dict) -> str:
         f"Why: {sig.get('why', '')}",
         f"Rules {sig['rules']} cfg {sig['config_hash']}. Paper tracking only; no order placed.",
     ]
-    return card("🔬", f"RESEARCH CALL · {s['direction']} BRENT", rows, note,
-                f"research · NOT AN ALERT · {sig['id']}", details)
+    if families:
+        note = (f"New research family ({', '.join(families)}; unproven, paper only). " + note)
+        for o in others or []:
+            details.append(f"Also {o['setup']['kind']} {o['id']}: zone {o['setup']['zone_lo']:.2f}-{o['setup']['zone_hi']:.2f}, "
+                           f"stop {o['setup']['stop']:.2f}")
+    title = f"RESEARCH CALL · {' + '.join(families)} · {s['direction']} BRENT" if families else \
+        f"RESEARCH CALL · {s['direction']} BRENT"
+    return card("🔬", title, rows, note, f"research · NOT AN ALERT · {sig['id']}", details)
 
 
 ENTRY_ONLY = ("This cancels the entry suggestion only. No broker order or position was "

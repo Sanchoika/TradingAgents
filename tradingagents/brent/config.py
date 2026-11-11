@@ -93,6 +93,11 @@ class BrentConfig:
     # Research calls (2026-11-11, Irakli): every chart setup that does not become a real alert is
     # sent once as a graded RESEARCH CALL card (not confirmed by news; information, not an entry).
     research_calls: bool = True
+    # Research families v1 (docs/brent-research-families-v1.md): new setup families as graded
+    # research calls only (never real alerts); a daily cap across all research cards.
+    research_families: bool = True
+    research_call_cap: int = 8
+    family_arm_hours: float = 2.0
     info_briefs_et: list[str] = field(default_factory=lambda: ["07:00", "12:00"])
     info_per_day: int = 4             # non-urgent INFO per day, including the briefs
     info_brief_slots: int = 2         # of info_per_day, kept for the scheduled briefs
