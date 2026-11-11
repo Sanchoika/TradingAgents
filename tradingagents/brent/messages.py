@@ -77,8 +77,11 @@ def alert_text(sig: dict, extra: dict) -> str:
             ("Stop", f"{s['stop']:.2f}"),
             ("Target", f"{p['t1']:.2f} · {p['t2']:.2f}"),
             ("Until", f"{hms(expiry)} ET")]
+    if sig.get("grade"):
+        rows.append(("Grade", f"{sig['grade']} · {sig.get('grade_reason', '')}"))
     details = [
         f"{sig['id']} | {sig.get('label', '')}"
+        + (f" | upgrade of research call {sig['from_research']}" if sig.get("from_research") else "")
         + (f" | follows WATCH {sig['from_watch']}" if sig.get("from_watch") else ""),
         f"Valid until {stamp(expiry)}, ONLY while the executable {px_name} stays within "
         f"{s['zone_lo']:.2f}-{s['zone_hi']:.2f} and spread is below {extra['max_spread']:g}. "
@@ -104,6 +107,30 @@ def alert_text(sig: dict, extra: dict) -> str:
     ]
     return card("🟢" if long_ else "🔴", f"{s['direction']} BRENT", rows, note,
                 f"paper · NO ORDER PLACED · {sig['id']}", details, url=sig.get("report_url", ""))
+
+
+def research_text(sig: dict, grade: str, reason: str, extra: dict) -> str:
+    """RESEARCH CALL card: a chart setup that is NOT a confirmed alert (grade B or C)."""
+    s, q, p = sig["setup"], sig["quote"], sig["plan"]
+    long_ = s["direction"] == LONG
+    side, px_name = ("BUY", "ask") if long_ else ("SELL", "bid")
+    expiry = datetime.fromisoformat(sig["expires_at"])
+    rows = [("Entry", f"{side} {px_name} {s['zone_lo']:.2f}–{s['zone_hi']:.2f}"),
+            ("Stop", f"{s['stop']:.2f}"),
+            ("Target", f"{p['t1']:.2f} · {p['t2']:.2f}"),
+            ("Grade", f"{grade} · {reason}")]
+    note = ("Research only: NOT confirmed by news. " + ("News conflicts: information only." if grade == "C"
+            else "Chart setup without news support.") + " Paper and practice track it; a real alert may follow.")
+    details = [
+        f"{sig['id']} | research track ({s['kind']} {s['direction']}) | grade {grade}",
+        f"Quote {stamp(datetime.fromisoformat(q['time']))}: bid {q['bid']:.3f} / ask {q['ask']:.3f} / spread {q['spread']:.3f}",
+        f"Zone valid until {stamp(expiry)}; stop {s['stop']:.2f}; a 15-min close {'below' if long_ else 'above'} "
+        f"{s['invalid_close']:.2f} cancels it. Targets 1R {p['t1']:.2f} | 2R {p['t2']:.2f}; hold up to {extra['max_hold_hours']:g}h.",
+        f"Why: {sig.get('why', '')}",
+        f"Rules {sig['rules']} cfg {sig['config_hash']}. Paper tracking only; no order placed.",
+    ]
+    return card("🔬", f"RESEARCH CALL · {s['direction']} BRENT", rows, note,
+                f"research · NOT AN ALERT · {sig['id']}", details)
 
 
 ENTRY_ONLY = ("This cancels the entry suggestion only. No broker order or position was "
