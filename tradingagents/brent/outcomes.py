@@ -46,6 +46,59 @@ def news_moves(bars: list[dict], first_seen: datetime, atr: float, after=(15, 60
     return out
 
 
+VARIANTS = ("plain", "scale_1r", "breakeven", "news_flip", "broker_tp")
+
+
+def manage(bars: list[dict], direction: str, entry: float, stop: float, risk: float, t1: float, t2: float,
+           entry_time: datetime, deadline: datetime, flip_at: datetime | None = None,
+           tp_hours: float = 24.0) -> dict | None:
+    """Position management in shadow (list item 4): the same trade replayed on 1-minute bid/ask candles
+    under each rule, in R (no financing). Paper-v2 conventions: exit-side prices, a stop fills one
+    spread worse (or at a gapped open), a candle touching both stop and target counts as the stop.
+      plain      stop, 2R target, time limit (the paper rule, recomputed here so all compare alike)
+      scale_1r   half off at 1R, the rest as plain
+      breakeven  stop moves to entry once 1R is reached
+      news_flip  as plain, but out at the first minute after a material headline against the trade
+      broker_tp  the 2R take-profit and the stop rest at the broker; no time exit (up to tp_hours)
+    None when the candles do not cover the entry."""
+    d = 1 if direction == LONG else -1
+    bars = sorted((b for b in bars if b.get("complete", True) and b["time"] >= entry_time.replace(second=0, microsecond=0)),
+                  key=lambda b: b["time"])
+    if risk <= 0 or not bars or bars[0]["time"] > entry_time + timedelta(minutes=2):
+        return None
+    R = lambda px: (px - entry) * d / risk   # noqa: E731
+
+    def run(variant):
+        end = entry_time + timedelta(hours=tp_hours) if variant == "broker_tp" else deadline
+        st, size, got, last = stop, 1.0, 0.0, None
+        for b in bars:
+            if b["time"] >= end:
+                break
+            lo, hi = (b["bid_l"], b["bid_h"]) if d == 1 else (b["ask_l"], b["ask_h"])
+            opn = b["bid_o"] if d == 1 else b["ask_o"]
+            sp = b["ask_c"] - b["bid_c"]
+            if variant == "news_flip" and flip_at is not None and b["time"] >= flip_at:
+                return got + size * R(opn)
+            worst, best = (lo, hi) if d == 1 else (hi, lo)
+            if (worst - st) * d <= 0:
+                px = opn - d * sp if (opn - st) * d <= 0 else st - d * sp
+                return got + size * R(px)
+            if (best - t1) * d >= 0:
+                if variant == "scale_1r" and size == 1.0:
+                    got, size = 0.5 * R(t1), 0.5
+                if variant == "breakeven":
+                    st = entry
+            if (best - t2) * d >= 0:
+                return got + size * R(t2)
+            last = b
+        if last is None:
+            return None
+        return got + size * R(last["bid_c"] if d == 1 else last["ask_c"])
+
+    out = {v: run(v) for v in VARIANTS}
+    return None if out["plain"] is None else {k: (round(v, 3) if v is not None else None) for k, v in out.items()}
+
+
 def _one(bars: list[dict], i: int, d: int, risk: float, hold_end: datetime) -> float | None:
     """Paper-v2-like trade from bar i's open: entry at the executable side + 1 spread, stop and
     2R target at the given risk, exit at the time limit. Returns R (no financing), None if no data."""

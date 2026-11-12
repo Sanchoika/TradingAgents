@@ -1269,6 +1269,11 @@ class Monitor:
         if sig.get("arm") != "lab":   # lab twins are judged on their own go/no-go count
             at = _dt(sig["decided_at"])
             self._queue_post(sig, "baseline", at - timedelta(hours=2), at + timedelta(hours=2))
+            # position management in shadow: replayed once the 24 h broker take-profit window has run out
+            if pp.get("deadline") and sig["plan"].get("t1") is not None:
+                et = _dt(pp["entry_time"])
+                self._queue_post(sig, "manage", et, et + timedelta(hours=24), entry=pp["entry"], t1=sig["plan"]["t1"],
+                                 deadline=pp["deadline"], recorded_r=pp["net_r"])
 
     # ------------------------------------------------------------- strategy lab v1 (paper twins only)
     def _lab_rules(self, now: datetime) -> list[dict]:
@@ -1351,13 +1356,22 @@ class Monitor:
         del done[:-3000]
 
     # ------------------------------------------- measurement only (missed cards, random baseline)
-    def _queue_post(self, sig: dict, kind: str, start: datetime, end: datetime):
-        due = end + timedelta(minutes=2) if kind == "missed" else \
+    def _queue_post(self, sig: dict, kind: str, start: datetime, end: datetime, **extra):
+        due = end + timedelta(minutes=2) if kind in ("missed", "manage") else \
             end + timedelta(hours=self.cfg.max_hold_hours, minutes=2)
         self.st.setdefault("post_checks", []).append({
             "id": sig["id"], "kind": kind, "start": _iso(start), "end": _iso(end), "due": _iso(due),
             "direction": sig["setup"]["direction"], "setup": sig["setup"]["kind"], "arm": sig.get("arm"),
-            "stop": sig["setup"]["stop"], "target": sig["plan"]["t2"], "risk": sig["paper"].get("risk")})
+            "stop": sig["setup"]["stop"], "target": sig["plan"]["t2"], "risk": sig["paper"].get("risk"), **extra})
+
+    def _news_flip(self, direction: str, start: datetime, end: datetime, now: datetime) -> datetime | None:
+        """First material headline against the trade, first seen while it was open (shadow only)."""
+        against = "bearish" if direction == LONG else "bullish"
+        hours = (now - start).total_seconds() / 3600 + 1
+        ts = [_dt(i["first_seen"]) for i in news.classified_items(self.cfg.journal_dir, now, hours=hours)
+              if i.get("material") and i["classification"].get("bias") == against
+              and start < _dt(i["first_seen"]) < end]
+        return min(ts) + timedelta(minutes=1) if ts else None
 
     def post_checks(self, now: datetime):
         """Due missed-card and baseline checks, at most one candle fetch per 2 minutes. Errors are
@@ -1382,6 +1396,12 @@ class Monitor:
                     out = outcomes.first_hit(bars, c["direction"], c["stop"], c["target"], start, _dt(c["end"]))
                     self.store.write("missed_outcome", id=c["id"], outcome=out, setup_kind=c["setup"], arm=c["arm"],
                                      hours=self.cfg.max_hold_hours)
+                elif c["kind"] == "manage":
+                    flip = None if self.cfg.research_only else self._news_flip(c["direction"], start, _dt(c["deadline"]), now)
+                    m = outcomes.manage(bars, c["direction"], c["entry"], c["stop"], c["risk"] or 0, c["t1"], c["target"],
+                                        start, _dt(c["deadline"]), flip)
+                    self.store.write("manage_outcome", id=c["id"], setup_kind=c["setup"], arm=c["arm"], variants=m,
+                                     news_flip_at=_iso(flip) if flip else None, recorded_r=c.get("recorded_r"))
                 else:
                     b = outcomes.baseline(bars, c["risk"] or 0, start, _dt(c["end"]), self.cfg.max_hold_hours, c["id"])
                     self.store.write("baseline", id=c["id"], setup_kind=c["setup"], arm=c["arm"],

@@ -79,3 +79,14 @@ The same go/no-go rule as Brent, **per market and per family**: checkpoint at 30
   - its source, category, status, scope, whether it was material, and whether the article text was read (`full_text`) or only the snippet.
 - **What it doesn't change:** no new model call (it reads the existing classifications), no change to news grades, the news policy or any rule. NORTH shows the results ("News brain").
 - **Why:** the grades may only change once this evidence shows which sources and headline types call direction, whether material items move Brent more, and whether full-article reading helps. Any change is proposed to Irakli, never made automatically.
+
+## Position management in shadow v1 (2026-11-12, list item 4)
+
+- **What it does:** 24 h after each closed paper trade enters (research, family or real-alert arm; not lab twins), the bot replays that trade on 1-minute bid/ask candles under each rule and writes one `manage_outcome` record with the R of each:
+  - **plain:** stop, 2R target, time limit. This is the paper rule, recomputed so all variants compare alike.
+  - **scale_1r:** half off at 1R, the rest as plain.
+  - **breakeven:** the stop moves to entry once 1R is reached.
+  - **news_flip:** out at the first minute after a material headline against the trade (Brent only; the desks have no news check).
+  - **broker_tp:** the 2R take-profit and the stop rest at the broker, with no time exit (up to 24 h).
+- **Conventions:** paper-v2: exit-side prices, a stop fills one spread worse or at a gapped open, and a candle touching both the stop and the target counts as the stop. No financing.
+- **What it never does:** change a practice order, the paper rules or the live rules. NORTH compares each variant with plain hold on the same trades ("Position management"). A switch would be proposed to Irakli once a variant is clearly better on 30+ trades.
