@@ -71,6 +71,8 @@ def grade_of(a: dict, direction: str) -> tuple[str, str]:
         return "C", f"news conflicts ({pol['row']})"
     if pol["action"] == direction and "news-supported" in (pol.get("label") or ""):
         return "A", "chart and news agree"
+    if "news unavailable" in pol["row"]:
+        return "B", "chart only, NEWS NOT CHECKED (news system unavailable)"
     return "B", f"chart only, no conflicting news ({pol['row']})"
 
 class Monitor:
@@ -459,8 +461,8 @@ class Monitor:
         self.st["news_process"] = {"checked_at": _iso(now), "running": locked,
                                    "status": nv.get("status"), "problem": problem}
         if problem:
-            self.ops_notice("news_process", f"{problem}. Entry alerts that need news are "
-                            "suppressed (WATCH) until it recovers.")
+            self.ops_notice("news_process", f"{problem}. Until it recovers, with-trend chart setups still alert "
+                            "as 'chart-led, news unavailable' (news NOT checked); counter-trend ones wait.")
 
     def check_stale(self, q: Quote, now: datetime):
         age = q.age(now)
@@ -800,6 +802,11 @@ class Monitor:
         sig = self.st["signals"].get(sd.get("shadow_id") or "")
         if not sig or sig.get("status") != "valid":
             return
+        why = self.research_card_blocked(direction, [sig], self.now())
+        if why:
+            sd["research_call_id"] = sig["id"]   # decided once: no card for this setup
+            self.store.write("research_call_skipped", id=sig["id"], reason=why)
+            return
         grade, reason = grade_of(a, direction)
         sd["research_call_id"] = sig["id"]
         text = messages.research_text(sig, grade, reason, {"max_hold_hours": self.cfg.max_hold_hours})
@@ -827,7 +834,11 @@ class Monitor:
         try:
             fn(*args)
         except Exception as exc:
-            self.store.write("family_error", where=fn.__name__, error=f"{type(exc).__name__}: {exc}"[:300])
+            msg = f"{fn.__name__}: {type(exc).__name__}: {exc}"[:300]
+            if self.st.get("family_error_last") != msg:
+                self.st["family_error_last"] = msg
+                self.store.write("family_error", where=fn.__name__, error=msg)
+                self.ops_notice("family_error", f"research families error (the bot keeps running): {msg}")
 
     def on_family_bar(self, bar: dict, close_t: datetime, a: float):
         fam = self.st.setdefault("family_setups", {})
@@ -886,23 +897,29 @@ class Monitor:
         for direction, sigs in made.items():
             self._family_card(direction, sigs, now)
 
-    def _family_card(self, direction: str, sigs: list[dict], now: datetime):
-        if not self.cfg.research_calls or not self.cfg.alerts_enabled:
-            return
+    def research_card_blocked(self, direction: str, sigs: list[dict], now: datetime) -> str | None:
+        """Shared by every research card: a card or real alert the same way in the last 15 min, or the daily cap."""
         recent = now - timedelta(minutes=15)
         for o in self.st["signals"].values():
             if o["setup"]["direction"] != direction or o in sigs:
                 continue
             carded = o.get("research_call") or o.get("family_card") or (o.get("arm") == "combined" and o.get("delivered"))
             if carded and _dt(o["decided_at"]) >= recent:
-                self.store.write("family_card_skipped", ids=[x["id"] for x in sigs], reason="a card in that direction in the last 15 min")
-                return
+                return "a card in that direction in the last 15 min"
         day = rules.ny(now).date().isoformat()
         c = self.st.setdefault("research_cards", {"day": day, "n": 0})
         if c["day"] != day:
             c.update(day=day, n=0)
         if c["n"] >= self.cfg.research_call_cap:
-            self.store.write("family_card_skipped", ids=[x["id"] for x in sigs], reason=f"daily cap {self.cfg.research_call_cap}")
+            return f"daily cap {self.cfg.research_call_cap}"
+        return None
+
+    def _family_card(self, direction: str, sigs: list[dict], now: datetime):
+        if not self.cfg.research_calls or not self.cfg.alerts_enabled:
+            return
+        why = self.research_card_blocked(direction, sigs, now)
+        if why:
+            self.store.write("family_card_skipped", ids=[x["id"] for x in sigs], reason=why)
             return
         try:
             nv = self.news_view(now)
@@ -931,6 +948,10 @@ class Monitor:
                          f"({i['publisher'] or i['feed']}, {i['status']}, {i['scope']}; published {pub}, "
                          f"first seen {messages.stamp(_dt(i['first_seen']))}): {i['mechanism']}")
             contra = i.get("contradiction") or "none stated"
+        elif nv.get("state") == "unavailable":
+            news_line = (f"NEWS NOT CHECKED: the news system is unavailable ({nv.get('why') or nv.get('status') or 'no reason given'}). "
+                         "This alert is chart-led only (news-policy-v3 treats missing news as neutral).")
+            contra = "News was NOT checked (news system unavailable): chart-led only."
         else:
             h = nv.get("health") or {}
             n = h.get("general_news_fresh", len(h.get("fresh_feeds", [])))

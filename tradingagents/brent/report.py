@@ -49,7 +49,8 @@ def group_of(sg: dict, accepted: set | None = None) -> str:
         return "chart-only (shadow, not sent)"
     label = sg.get("label") or "unlabelled"
     base = "news-supported" if label.startswith("news-supported") else (
-        "chart-led" if label.startswith("chart-led") else label)
+        ("chart-led, news unavailable" if "news unavailable" in label else "chart-led") if label.startswith("chart-led")
+        else label)
     if "counter-trend" in label:
         base += ", counter-trend"
     ok = sg.get("delivered") if accepted is None else sg.get("id") in accepted
@@ -73,7 +74,8 @@ def progression(events: list[dict]) -> dict:
     # record or a signal; counting those keeps old and new versions on the same denominator.
     detected = {e["key"] for e in events if e["event"] in ("watch", "candidate", "suppressed")
                 and e.get("key")}
-    detected |= {(e.get("setup") or {}).get("key") for e in events if e["event"] == "signal"} - {None}
+    detected |= {(e.get("setup") or {}).get("key") for e in events
+                 if e["event"] == "signal" and e.get("arm") != "family"} - {None}
     suppressed: dict[str, list[str]] = {}
     for e in events:
         if e["event"] == "suppressed" and e.get("key"):
@@ -244,10 +246,13 @@ def summarize(events: list[dict]) -> dict:
     cands = [e for e in events if e["event"] == "candidate"]
     paper["candidates_by_policy_row"] = dict(Counter(f"{e['action']}: {e['row']}" for e in cands))
     chart_only = paper_stats(shadow)
+    family_ids = {i for i, sg in signals.items() if sg.get("arm") == "family"}
+    families_paper = paper_stats(family_ids) if family_ids else {}
     chart_only["differences_from_combined"] = ARM_DIFFERENCES
     manual = [e for e in events if e["event"] == "manual"]
     return {"progression": progression(events), "operational": op, "directional_by_group": direction, "paper_hypothetical": paper,
             "chart_only_comparison": chart_only,
+            "research_families_paper": families_paper,
             "manual_confirmed": {"records": len(manual),
                                  "entered": sum(1 for e in manual if e.get("entered")),
                                  "results": [{k: e.get(k) for k in ("id", "entered", "price", "units",
