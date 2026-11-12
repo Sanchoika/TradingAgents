@@ -90,3 +90,22 @@ def test_a_broken_lab_never_stops_the_bot(tmp_path):
     mon.lab_twins = lambda *a: (_ for _ in ()).throw(RuntimeError("lab bug"))
     mon.tick()
     assert alerts(sender) and any(e["event"] == "lab_error" for e in store.events())
+
+
+def test_duplicate_extra_field_and_huge_files_are_handled(tmp_path):
+    r = rule()
+    write(tmp_path, r, r)
+    (tmp_path / "BCO_USD" / "x-extra.json").write_text(json.dumps({**rule(params={**P, "target_r": 2.0}), "evil": 1}))
+    (tmp_path / "BCO_USD" / "y-deep.json").write_text("[" * 5000 + "]" * 5000)
+    got, bad = lab.load(str(tmp_path), "BCO_USD")
+    assert len(got) == 1 and len(bad) == 2 and any("top-level" in b for b in bad)
+
+
+def test_lab_twins_get_no_random_baseline(tmp_path):
+    mon, *_ = make(tmp_path, lab_dir="")
+    now = mon.now().isoformat()
+    sig = {"id": "LB-2", "arm": "lab", "setup": {"kind": "BREAKOUT", "direction": "LONG", "stop": 99.0}, "decided_at": now,
+           "expires_at": now, "plan": {"t2": 103},
+           "paper": {"state": "open", "entry": 100.0, "entry_time": now, "risk": 1.0, "mfe": 0, "mae": 0, "t1": False}}
+    mon.paper_exit(sig, 101.0, mon.now(), "time")
+    assert not [c for c in mon.st.get("post_checks", []) if c["id"] == "LB-2"]

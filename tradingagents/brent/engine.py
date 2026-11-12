@@ -1239,7 +1239,8 @@ class Monitor:
                 px, how = s.stop - d * spread, "stop touched"
             return self.paper_exit(sig, px, now, "stop", how)
         if (best - sig["plan"]["t2"]) * d >= 0:
-            return self.paper_exit(sig, sig["plan"]["t2"], now, "target 2R", "exit-side price reached target")
+            return self.paper_exit(sig, sig["plan"]["t2"], now, "target (lab)" if sig.get("arm") == "lab" else "target 2R",
+                                   "exit-side price reached target")
         if now >= _dt(pp["deadline"]):
             px = close_bid if d == 1 else close_ask
             return self.paper_exit(sig, px, now, "time", "exit-side price at the time limit")
@@ -1263,8 +1264,9 @@ class Monitor:
         if _carded(sig):
             self.send_notice(messages.result_text(sig, self.cfg.display_name), "research_result", sig["id"], now)
         # measurement only: random entries 2h either side of the signal, due once they have all run out
-        at = _dt(sig["decided_at"])
-        self._queue_post(sig, "baseline", at - timedelta(hours=2), at + timedelta(hours=2))
+        if sig.get("arm") != "lab":   # lab twins are judged on their own go/no-go count
+            at = _dt(sig["decided_at"])
+            self._queue_post(sig, "baseline", at - timedelta(hours=2), at + timedelta(hours=2))
 
     # ------------------------------------------------------------- strategy lab v1 (paper twins only)
     def _lab_rules(self, now: datetime) -> list[dict]:

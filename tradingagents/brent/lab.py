@@ -32,6 +32,8 @@ def validate(rule: dict, instrument: str) -> dict:
     """The rule as frozen, or ValueError. Only the fields below exist; anything else is refused."""
     if not isinstance(rule, dict) or rule.get("instrument") != instrument:
         raise ValueError("wrong instrument")
+    if not set(rule) <= {"instrument", "base", "params", "hash", "source", "why", "createdAt"}:
+        raise ValueError("unknown top-level field")
     base, p = rule.get("base"), rule.get("params")
     if base not in BASES or not isinstance(p, dict):
         raise ValueError("unknown base setup")
@@ -58,13 +60,18 @@ def load(lab_dir: str, instrument: str) -> tuple[list[dict], list[str]]:
     root = Path(lab_dir) if lab_dir else None
     if root is None or not root.is_dir() or (root / "OFF").exists():
         return [], []
-    rules, bad = [], []
+    rules, bad, seen = [], [], set()
     folder = root / instrument
     for f in sorted(folder.glob("*.json"))[:20] if folder.is_dir() else []:
         try:
-            rules.append(validate(json.loads(f.read_text(encoding="utf-8")), instrument))
-        except (OSError, ValueError) as exc:
-            bad.append(f"{f.name}: {exc}")
+            if f.stat().st_size > 65536:
+                raise ValueError("file too large")
+            r = validate(json.loads(f.read_text(encoding="utf-8")), instrument)
+            if r["id"] not in seen:   # the same frozen rule twice runs once
+                seen.add(r["id"])
+                rules.append(r)
+        except Exception as exc:   # any bad file is skipped and reported; it never stops the others
+            bad.append(f"{f.name}: {type(exc).__name__}: {exc}"[:200])
     return rules[:MAX_PER_MARKET], bad
 
 
