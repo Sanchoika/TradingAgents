@@ -43,6 +43,8 @@ ARM_DIFFERENCES = (
 
 def group_of(sg: dict, accepted: set | None = None) -> str:
     """Reporting group: arm, then (combined) label and whether it was actually sent."""
+    if sg.get("arm") == "lab":
+        return f"research lab {sg.get('lab', '?')} {(sg.get('setup') or {}).get('kind', '?')} (paper only)"
     if sg.get("arm") == "family":
         return f"research family {(sg.get('setup') or {}).get('kind', '?')} (paper only)"
     if sg.get("arm", "combined") != "combined":
@@ -75,7 +77,7 @@ def progression(events: list[dict]) -> dict:
     detected = {e["key"] for e in events if e["event"] in ("watch", "candidate", "suppressed")
                 and e.get("key")}
     detected |= {(e.get("setup") or {}).get("key") for e in events
-                 if e["event"] == "signal" and e.get("arm") != "family"} - {None}
+                 if e["event"] == "signal" and e.get("arm") not in ("family", "lab")} - {None}
     suppressed: dict[str, list[str]] = {}
     for e in events:
         if e["event"] == "suppressed" and e.get("key"):
@@ -248,11 +250,14 @@ def summarize(events: list[dict]) -> dict:
     chart_only = paper_stats(shadow)
     family_ids = {i for i, sg in signals.items() if sg.get("arm") == "family"}
     families_paper = paper_stats(family_ids) if family_ids else {}
+    lab_ids = {i for i, sg in signals.items() if sg.get("arm") == "lab"}
+    lab_paper = paper_stats(lab_ids) if lab_ids else {}
     chart_only["differences_from_combined"] = ARM_DIFFERENCES
     manual = [e for e in events if e["event"] == "manual"]
     return {"progression": progression(events), "operational": op, "directional_by_group": direction, "paper_hypothetical": paper,
             "chart_only_comparison": chart_only,
             "research_families_paper": families_paper,
+            "research_lab_paper": lab_paper,
             "manual_confirmed": {"records": len(manual),
                                  "entered": sum(1 for e in manual if e.get("entered")),
                                  "results": [{k: e.get(k) for k in ("id", "entered", "price", "units",

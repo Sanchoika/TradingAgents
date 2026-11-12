@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import chart, families, info, messages, news, outcomes, rules
+from . import chart, families, info, lab, messages, news, outcomes, rules
 from .client import OandaReadError, Quote
 from .config import PAPER_RULES_VERSION, RULES_VERSION, BrentConfig, code_commit, manifest
 from .rules import LONG, Setup
@@ -790,6 +790,8 @@ class Monitor:
             sig.update(delivered=False, simulated=True, send_seconds=None, sent_at=_iso(now),
                        notice="not sent: chart-only comparison arm" if arm != "combined"
                        else "not sent: alerts disabled")
+            if arm in ("chart-only", "family"):
+                self.guard_lab(sig, now)
             return
         w = self.st["watches"].get(s.key)
         if w and w.get("tag"):
@@ -928,7 +930,7 @@ class Monitor:
         if sc is None:
             sc = self.st["scores"] = {}
             ev = self.store.events()
-            kinds = {e["id"]: e["setup"]["kind"] for e in ev if e["event"] == "signal" and e.get("arm") != "combined"}
+            kinds = {e["id"]: e["setup"]["kind"] for e in ev if e["event"] == "signal" and e.get("arm") not in ("combined", "lab")}
             for e in ev:
                 if e["event"] == "paper_exit" and e["id"] in kinds:
                     self._score(sc, kinds[e["id"]], e["net_r"])
@@ -1179,7 +1181,7 @@ class Monitor:
                 d = 1 if s.direction == LONG else -1
                 px = rules.executable(s.direction, q.bid, q.ask)
                 fill = px + d * q.spread
-                deadline = min(now + timedelta(hours=self.cfg.max_hold_hours),
+                deadline = min(now + timedelta(hours=sig.get("hold_hours", self.cfg.max_hold_hours)),
                                rules.weekly_close(now) - timedelta(minutes=15))
                 pp.update(state="open", entry=round(fill, 4), entry_time=_iso(now),
                           quote_time=_iso(q.time), quote_bid=q.bid, quote_ask=q.ask,
@@ -1237,7 +1239,8 @@ class Monitor:
                 px, how = s.stop - d * spread, "stop touched"
             return self.paper_exit(sig, px, now, "stop", how)
         if (best - sig["plan"]["t2"]) * d >= 0:
-            return self.paper_exit(sig, sig["plan"]["t2"], now, "target 2R", "exit-side price reached target")
+            return self.paper_exit(sig, sig["plan"]["t2"], now, "target (lab)" if sig.get("arm") == "lab" else "target 2R",
+                                   "exit-side price reached target")
         if now >= _dt(pp["deadline"]):
             px = close_bid if d == 1 else close_ask
             return self.paper_exit(sig, px, now, "time", "exit-side price at the time limit")
@@ -1252,7 +1255,7 @@ class Monitor:
         net *= (1 - self.cfg.fx_loss_pct / 100) if net > 0 else (1 + self.cfg.fx_loss_pct / 100)
         pp.update(state="closed", exit=round(px, 4), exit_time=_iso(now), exit_reason=reason,
                   exit_basis=how, gross_r=round(gross / pp["risk"], 3), net_r=round(net / pp["risk"], 3))
-        if sig.get("arm") != "combined":   # before the write: a rebuild reads the journal
+        if sig.get("arm") not in ("combined", "lab"):   # before the write: a rebuild reads the journal
             self._score(self._scores(), sig["setup"]["kind"], pp["net_r"])
         self.store.write("paper_exit", id=sig["id"], exit=pp["exit"], reason=reason, basis=how,
                          gross_r=pp["gross_r"], net_r=pp["net_r"], mfe_r=round(pp["mfe"], 3),
@@ -1261,8 +1264,53 @@ class Monitor:
         if _carded(sig):
             self.send_notice(messages.result_text(sig, self.cfg.display_name), "research_result", sig["id"], now)
         # measurement only: random entries 2h either side of the signal, due once they have all run out
-        at = _dt(sig["decided_at"])
-        self._queue_post(sig, "baseline", at - timedelta(hours=2), at + timedelta(hours=2))
+        if sig.get("arm") != "lab":   # lab twins are judged on their own go/no-go count
+            at = _dt(sig["decided_at"])
+            self._queue_post(sig, "baseline", at - timedelta(hours=2), at + timedelta(hours=2))
+
+    # ------------------------------------------------------------- strategy lab v1 (paper twins only)
+    def _lab_rules(self, now: datetime) -> list[dict]:
+        last = self.st.get("lab_loaded_at")
+        if getattr(self, "_lab", None) is None or not last or now - _dt(last) > timedelta(minutes=5):
+            rules_, bad = lab.load(self.cfg.lab_dir, self.cfg.instrument)
+            if bad != self.st.get("lab_bad"):
+                self.st["lab_bad"] = bad
+                if bad:
+                    self.store.write("lab_rule_skipped", problems=bad[:10])
+            self._lab, self.st["lab_loaded_at"] = rules_, _iso(now)
+        return self._lab
+
+    def guard_lab(self, sig: dict, now: datetime):
+        try:
+            self.lab_twins(sig, now)
+        except Exception as exc:   # the lab never stops the bot or changes the base signal
+            self.store.write("lab_error", id=sig.get("id"), error=f"{type(exc).__name__}: {exc}"[:300])
+
+    def lab_twins(self, sig: dict, now: datetime):
+        """One silent paper twin per matching lab rule: same entry window, the rule's stop size, target
+        and holding time. Never a card, a real alert or a practice order (NORTH follows chart-only only)."""
+        s, q = sig["setup"], sig["quote"]
+        hour = rules.ny(now).hour
+        for r in self._lab_rules(now):
+            if not lab.matches(r, s["kind"], s["direction"], hour):
+                continue
+            p, d, dec = r["params"], (1 if s["direction"] == LONG else -1), self.cfg.price_decimals
+            entry = rules.executable(s["direction"], q["bid"], q["ask"])
+            dist = abs(entry - s["stop"]) * p["stop_mult"]
+            if dist <= 0:
+                continue
+            self.st["seq_lab"] = self.st.get("seq_lab", 0) + 1
+            tid = f"LB-{rules.ny(now):%Y%m%d}-{self.st['seq_lab']:03d}"
+            twin = {k: v for k, v in sig.items() if k not in ("paper", "marks", "research_call", "family_card")}
+            twin.update(id=tid, arm="lab", telegram=False, lab=r["id"], lab_base=r["base"], lab_of=sig["id"],
+                        rules=lab.LAB_VERSION, hold_hours=p["hold_hours"],
+                        setup={**s, "stop": round(entry - d * dist, dec)},
+                        plan={**sig["plan"], "t1": round(entry + d * dist, dec),
+                              "t2": round(entry + d * p["target_r"] * dist, dec)},
+                        why=f"Lab {r['id']} ({r['base']}, {p}): frozen variant, paper only.",
+                        paper={"state": "waiting"}, marks={})
+            self.store.write("signal", **{k: v for k, v in twin.items() if k != "paper"})
+            self.st["signals"][tid] = twin
 
     # ------------------------------------------- measurement only (missed cards, random baseline)
     def _queue_post(self, sig: dict, kind: str, start: datetime, end: datetime):
