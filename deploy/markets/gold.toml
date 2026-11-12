@@ -1,0 +1,19 @@
+# Multi-market desk v1 (docs/multi-market-desk-v1.md): GOLD research desk. Research cards and paper
+# tracking only: never a real alert, no news check, no model calls, no orders. Service: brent-market@gold.
+instrument = "XAU_USD"
+display_name = "GOLD"
+research_only = true
+alerts_enabled = false
+info_alerts = false
+watch_alerts = false
+research_call_cap = 3
+price_decimals = 2
+max_spread = 0.60
+max_quote_age_seconds = 30
+range_low = 1000.0
+range_high = 10000.0
+blackouts = []
+eia_family = false
+financing_pct_year = 8.0
+notify_command = "hermes send --to telegram --quiet"
+journal_dir = "~/.tradingagents/markets/gold"

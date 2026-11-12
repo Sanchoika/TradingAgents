@@ -96,6 +96,12 @@ class BrentConfig:
     # Research families v1 (docs/brent-research-families-v1.md): new setup families as graded
     # research calls only (never real alerts); a daily cap across all research cards.
     research_families: bool = True
+    # Multi-market desk v1 (docs/multi-market-desk-v1.md): other markets run as separate research-only
+    # instances. Defaults keep Brent exactly as it is.
+    research_only: bool = False     # True: never a real alert (combined arm); research cards only
+    price_decimals: int = 3
+    display_name: str = "BRENT"
+    eia_family: bool = True          # EIA_REACTION family (oil markets only)
     research_call_cap: int = 8
     family_arm_hours: float = 2.0
     info_briefs_et: list[str] = field(default_factory=lambda: ["07:00", "12:00"])

@@ -64,6 +64,9 @@ def _dt(text: str) -> datetime:
     return datetime.fromisoformat(text)
 
 
+NO_NEWS_CHECK = "chart only (no news check for this market)"
+
+
 def grade_of(a: dict, direction: str) -> tuple[str, str]:
     """A = chart and news agree; B = chart only, no conflicting news; C = news conflicts."""
     pol = a["policy"]
@@ -84,7 +87,10 @@ class Monitor:
         self.cfg, self.client, self.store = cfg, client, store
         self._send, self.now = send, now
         # The separate news collector is watched only in production (default news view).
-        self.watch_news_process = news_view is None
+        self.watch_news_process = news_view is None and not cfg.research_only
+        if news_view is None and cfg.research_only:   # the news check is oil-only: no collector, no model
+            def news_view(t):
+                return {"state": "unavailable", "status": "off", "items": [], "why": NO_NEWS_CHECK}
         self.news_view = news_view or (lambda t: news.news_view(cfg.journal_dir, t))
         self.report_pages = report_pages
         self.st = store.state() or {}
@@ -214,7 +220,8 @@ class Monitor:
             self.store.write("start_quiet", last_card=last)
         else:
             ok, _, _ = self.send(messages.start_text(RULES_VERSION, self.cfg.config_hash(), account_line,
-                                                     self.manifest["experiment"], self.cfg.alerts_enabled),
+                                                     self.manifest["experiment"], self.cfg.alerts_enabled,
+                                                     self.cfg.display_name, self.cfg.research_only),
                                  "start")
             if ok:
                 self.st["ops"]["start_card_at"] = _iso(now)
@@ -485,7 +492,8 @@ class Monitor:
         if last and now - _dt(last) < RANGE_REPEAT:
             return  # flapping at the boundary: logged, not re-sent
         self.st["ops"]["range"] = _iso(now)
-        self.send(messages.range_text(q.mid, self.cfg.range_low, self.cfg.range_high, inside), "range")
+        self.send(messages.range_text(q.mid, self.cfg.range_low, self.cfg.range_high, inside, self.cfg.display_name,
+                                      2 if self.cfg.price_decimals == 3 else self.cfg.price_decimals), "range")
 
     def expire_setups(self, now: datetime):
         for s in self.st["setups"].values():
@@ -538,6 +546,9 @@ class Monitor:
                 self.issue(s, sd, arm="chart-only")
             a = self.assess(s, q, now)
             self.log_candidate(s, a)
+            if self.cfg.research_only:
+                self.research_call(sd, a, s.direction)
+                continue  # research-only market: never a real alert
             if a["policy"]["action"] != s.direction:
                 self.research_call(sd, a, s.direction)
                 continue  # WATCH / NO TRADE: the setup stays armed; news or chart may change
@@ -576,7 +587,7 @@ class Monitor:
     def notify_watches(self, q: Quote, now: datetime):
         """One WATCH per setup per material state change. A WATCH creates no signal and no paper
         fill. Only for new suggestions inside the operating range and only with alerts on."""
-        if not (self.cfg.alerts_enabled and self.cfg.watch_alerts) or not q.tradeable \
+        if self.cfg.research_only or not (self.cfg.alerts_enabled and self.cfg.watch_alerts) or not q.tradeable \
                 or q.age(now) > self.cfg.max_quote_age_seconds:
             return
         if self.cfg.alerts_enabled and not (self.cfg.range_low <= q.mid <= self.cfg.range_high):
@@ -797,7 +808,7 @@ class Monitor:
         """Send the setup's chart-only signal once as a graded RESEARCH CALL (never twice; never when
         it already became a real alert). Information only; paper tracking is unchanged."""
         if sd.get("research_call_id") or sd.get("status") == "alerted" or not self.cfg.research_calls \
-                or not self.cfg.alerts_enabled:
+                or not (self.cfg.alerts_enabled or self.cfg.research_only):
             return
         sig = self.st["signals"].get(sd.get("shadow_id") or "")
         if not sig or sig.get("status") != "valid":
@@ -807,9 +818,9 @@ class Monitor:
             sd["research_call_id"] = sig["id"]   # decided once: no card for this setup
             self.store.write("research_call_skipped", id=sig["id"], reason=why)
             return
-        grade, reason = grade_of(a, direction)
+        grade, reason = ("B", NO_NEWS_CHECK) if self.cfg.research_only else grade_of(a, direction)
         sd["research_call_id"] = sig["id"]
-        text = messages.research_text(sig, grade, reason, {"max_hold_hours": self.cfg.max_hold_hours})
+        text = messages.research_text(sig, grade, reason, self._card_extra())
         ok, secs, _ = self.send(text, "research", sig["id"])
         self._count_research_card()
         sig.update(research_call={"grade": grade, "reason": reason, "sent": ok})
@@ -818,8 +829,9 @@ class Monitor:
 
     # ------------------------------------------------- research families v1 (paper + calls only)
     def family_why(self, s: Setup) -> str:
-        return (f"{s.kind} setup armed {messages.stamp(_dt(s.armed_at))}: zone {s.zone_lo:.2f}-{s.zone_hi:.2f}, "
-                f"stop {s.stop:.2f}; a 15-min close beyond {s.invalid_close:.2f} cancels it. Frozen rules "
+        d = 2 if self.cfg.price_decimals == 3 else self.cfg.price_decimals
+        return (f"{s.kind} setup armed {messages.stamp(_dt(s.armed_at))}: zone {s.zone_lo:.{d}f}-{s.zone_hi:.{d}f}, "
+                f"stop {s.stop:.{d}f}; a 15-min close beyond {s.invalid_close:.{d}f} cancels it. Frozen rules "
                 f"{families.FAMILIES_VERSION} (docs/brent-research-families-v1.md); unproven, paper only.")
 
     def _count_research_card(self):
@@ -857,7 +869,8 @@ class Monitor:
                 s["status"] = "invalidated"
                 s["end_reason"] = reason
                 self.store.write("family_end", key=s["key"], status="invalidated", reason=reason)
-        for s in families.detect(bar, close_t, bars, a, self.daily, self.cfg.family_arm_hours):
+        for s in families.detect(bar, close_t, bars, a, self.daily, self.cfg.family_arm_hours,
+                                 self.cfg.price_decimals, self.cfg.eia_family):
             if s.key in seen:
                 continue
             seen.append(s.key)
@@ -897,6 +910,10 @@ class Monitor:
         for direction, sigs in made.items():
             self._family_card(direction, sigs, now)
 
+    def _card_extra(self) -> dict:
+        return {"max_hold_hours": self.cfg.max_hold_hours, "decimals": self.cfg.price_decimals,
+                "name": self.cfg.display_name, "research_only": self.cfg.research_only}
+
     def research_card_blocked(self, direction: str, sigs: list[dict], now: datetime) -> str | None:
         """Shared by every research card: a card or real alert the same way in the last 15 min, or the daily cap."""
         recent = now - timedelta(minutes=15)
@@ -915,7 +932,7 @@ class Monitor:
         return None
 
     def _family_card(self, direction: str, sigs: list[dict], now: datetime):
-        if not self.cfg.research_calls or not self.cfg.alerts_enabled:
+        if not self.cfg.research_calls or not (self.cfg.alerts_enabled or self.cfg.research_only):
             return
         why = self.research_card_blocked(direction, sigs, now)
         if why:
@@ -925,9 +942,9 @@ class Monitor:
             nv = self.news_view(now)
         except Exception as exc:
             nv = {"state": "unavailable", "why": str(exc)}
-        grade, reason = families.grade(nv, direction)
+        grade, reason = ("B", NO_NEWS_CHECK) if self.cfg.research_only else families.grade(nv, direction)
         names = [x["setup"]["kind"] for x in sigs]
-        text = messages.research_text(sigs[0], grade, reason, {"max_hold_hours": self.cfg.max_hold_hours},
+        text = messages.research_text(sigs[0], grade, reason, self._card_extra(),
                                       families=names, others=sigs[1:])
         ok, secs, _ = self.send(text, "research", sigs[0]["id"])
         self._count_research_card()
@@ -981,21 +998,22 @@ class Monitor:
                 self.store.write("page_error", id=sig["id"], error=str(exc)[:200])
 
     def why(self, s: Setup) -> str:
+        d = 2 if self.cfg.price_decimals == 3 else self.cfg.price_decimals
         t = s.trigger
         when = messages.stamp(_dt(s.armed_at))
         brk = self.cfg.break_atr * s.atr
         side = "high" if s.level_name == "PDH" else "low"
-        base = (f"15-min candle ending {when} (O {t['o']:.2f} H {t['h']:.2f} L {t['l']:.2f} "
-                f"C {t['c']:.2f}) vs yesterday's {side} {s.level:.2f}; break threshold {brk:.2f} "
-                f"= {self.cfg.break_atr:g} x daily ATR {s.atr:.2f}. ")
+        base = (f"15-min candle ending {when} (O {t['o']:.{d}f} H {t['h']:.{d}f} L {t['l']:.{d}f} "
+                f"C {t['c']:.{d}f}) vs yesterday's {side} {s.level:.{d}f}; break threshold {brk:.{d}f} "
+                f"= {self.cfg.break_atr:g} x daily ATR {s.atr:.{d}f}. ")
         if s.kind == "BREAKOUT":
             return base + (f"It closed beyond the level and price is back at it. Scenario A: the break "
                            f"holds and price extends {'up' if s.direction == LONG else 'down'}. "
-                           f"Scenario B: a 15-min close back through {s.level:.2f} means the break "
+                           f"Scenario B: a 15-min close back through {s.level:.{d}f} means the break "
                            "failed. Untested rule, forward paper tracking only.")
         return base + (f"It traded beyond the level but closed back inside. Scenario A: the rejected "
                        f"break reverts into yesterday's range. Scenario B: a 15-min close beyond "
-                       f"{s.level:.2f} means the break is back on. Untested rule, forward paper "
+                       f"{s.level:.{d}f} means the break is back on. Untested rule, forward paper "
                        "tracking only.")
 
     def skip_reasons(self, s: Setup, q: Quote, now: datetime) -> list[str]:

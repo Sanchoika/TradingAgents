@@ -1,0 +1,25 @@
+# Multi-market desk v1 (docs/multi-market-desk-v1.md): one research-only market per instance,
+# e.g. brent-market@gold. Research cards and paper tracking only; no orders, no real alerts.
+[Unit]
+Description=Research-only market desk %i (advisory, paper only)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/root/ta-brent
+Environment=PYTHONPATH=/root/ta-brent
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/root
+# The same read-only practice token file as brent-monitor (never read by Claude).
+EnvironmentFile=/etc/tradingagents/brent.env
+ExecStart=/root/TradingAgents/.venv/bin/python -m tradingagents.brent --config /root/ta-brent/deploy/markets/%i.toml run
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

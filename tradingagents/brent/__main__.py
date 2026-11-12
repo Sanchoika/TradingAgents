@@ -246,6 +246,8 @@ def cmd_health(args, cfg) -> int:
     store = Store(cfg.journal_dir)
     nh = news_health(cfg.journal_dir, cfg=cfg)
     bad = overall_health(store.state(), store.is_locked(), nh, datetime.now(UTC))
+    if cfg.research_only:   # research-only markets run no news collector
+        bad = [b for b in bad if not b.startswith("news")]
     print("OK" if not bad else "DEGRADED: " + "; ".join(bad))
     if args.notify:
         import shutil
