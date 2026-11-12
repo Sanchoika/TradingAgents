@@ -1,0 +1,19 @@
+# Multi-market desk v1 (docs/multi-market-desk-v1.md): EURUSD research desk. Research cards and paper
+# tracking only: never a real alert, no news check, no model calls, no orders. Service: brent-market@eurusd.
+instrument = "EUR_USD"
+display_name = "EURUSD"
+research_only = true
+alerts_enabled = false
+info_alerts = false
+watch_alerts = false
+research_call_cap = 3
+price_decimals = 5
+max_spread = 0.00030
+max_quote_age_seconds = 30
+range_low = 0.8
+range_high = 1.6
+blackouts = []
+eia_family = false
+financing_pct_year = 8.0
+notify_command = "hermes send --to telegram --quiet"
+journal_dir = "~/.tradingagents/markets/eurusd"

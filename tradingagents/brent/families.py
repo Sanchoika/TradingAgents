@@ -37,7 +37,7 @@ def eia_release_candle(t: datetime) -> bool:
 
 
 def detect(bar: dict, close_t: datetime, bars: list[dict], a: float, daily: list[dict] | None,
-           arm_hours: float) -> list[Setup]:
+           arm_hours: float, decimals: int = 3, eia: bool = True) -> list[Setup]:
     """Family setups armed by one completed 15-minute candle (mid prices). Pure function."""
     if a <= 0:
         return []
@@ -50,13 +50,13 @@ def detect(bar: dict, close_t: datetime, bars: list[dict], a: float, daily: list
 
     def mk(family, direction, lo, hi, stop, invalid, level_name, level, key_extra=""):
         return Setup(key=f"{day}-{family}{key_extra}-{direction}", kind=family, direction=direction,
-                     level_name=level_name, level=round(level, 3), zone_lo=round(lo, 3),
-                     zone_hi=round(hi, 3), stop=round(stop, 3), invalid_close=round(invalid, 3),
+                     level_name=level_name, level=round(level, decimals), zone_lo=round(lo, decimals),
+                     zone_hi=round(hi, decimals), stop=round(stop, decimals), invalid_close=round(invalid, decimals),
                      atr=a, armed_at=close_t.isoformat(), expires_at=expires, trigger=trig)
 
     rng, mid = bar["h"] - bar["l"], (bar["h"] + bar["l"]) / 2
     # EIA_REACTION: the release candle (Wednesday 10:30 ET, or the shifted time in a holiday week).
-    if eia_release_candle(t) and rng >= 0.25 * a:
+    if eia and eia_release_candle(t) and rng >= 0.25 * a:
         pos = (bar["c"] - bar["l"]) / rng
         if pos >= 0.7:
             out.append(mk("EIA_REACTION", LONG, bar["c"] - z, bar["c"], bar["l"] - 0.05 * a, mid, "EIA", mid))

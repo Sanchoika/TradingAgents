@@ -1,0 +1,19 @@
+# Multi-market desk v1 (docs/multi-market-desk-v1.md): NAS100 research desk. Research cards and paper
+# tracking only: never a real alert, no news check, no model calls, no orders. Service: brent-market@nas100.
+instrument = "NAS100_USD"
+display_name = "NAS100"
+research_only = true
+alerts_enabled = false
+info_alerts = false
+watch_alerts = false
+research_call_cap = 3
+price_decimals = 1
+max_spread = 3.0
+max_quote_age_seconds = 30
+range_low = 5000.0
+range_high = 50000.0
+blackouts = []
+eia_family = false
+financing_pct_year = 8.0
+notify_command = "hermes send --to telegram --quiet"
+journal_dir = "~/.tradingagents/markets/nas100"

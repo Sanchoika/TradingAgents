@@ -77,8 +77,8 @@ def detect(bar: dict, bar_close_time: datetime, pdh: float, pdl: float, a: float
 
     def mk(kind, direction, name, level, lo, hi, stop, invalid):
         return Setup(key=f"{day_label}-{kind}-{direction}-{name}", kind=kind, direction=direction,
-                     level_name=name, level=level, zone_lo=round(lo, 3), zone_hi=round(hi, 3),
-                     stop=round(stop, 3), invalid_close=level, atr=a, armed_at=armed,
+                     level_name=name, level=level, zone_lo=round(lo, cfg.price_decimals), zone_hi=round(hi, cfg.price_decimals),
+                     stop=round(stop, cfg.price_decimals), invalid_close=level, atr=a, armed_at=armed,
                      expires_at=expires, trigger=trig)
 
     if bar["c"] > pdh + brk:
@@ -132,7 +132,7 @@ def plan(s: Setup, entry: float, spread: float, cfg: BrentConfig) -> dict:
     for n in (1, 2):
         target = entry + d * n * risk
         gain = (n * risk - spread - fin) * (1 - fx)
-        out[f"t{n}"] = round(target, 3)
+        out[f"t{n}"] = round(target, cfg.price_decimals)
         out[f"rr{n}"] = round(gain / loss, 2) if loss > 0 else 0.0
     return out
 

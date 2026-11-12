@@ -42,11 +42,11 @@ def link(url: str, label: str = "report") -> str:
 
 
 def card(icon: str, title: str, rows=(), note: str = "", foot: str = "", details=(),
-         lead: str = "", url: str = "") -> str:
+         lead: str = "", url: str = "", market: str = "BRENT") -> str:
     """One message. ``rows`` are (label, value, boxed) with value already a plain string;
     ``details`` are plain lines shown in a collapsed quote. All plain text is escaped here."""
-    if "BRENT" not in title:          # the chat also gets the stock digest: always say Brent
-        title = f"BRENT {title}"
+    if market not in title:          # the chat also gets the stock digest: always say which market
+        title = f"{market} {title}"
     out = [f"{icon} <b>{esc(title)}</b>", DIV]
     if lead:
         out.append(f"<b>{esc(lead)}</b>")
@@ -113,31 +113,37 @@ def research_text(sig: dict, grade: str, reason: str, extra: dict, families: lis
                   others: list[dict] | None = None) -> str:
     """RESEARCH CALL card: a chart setup that is NOT a confirmed alert (grade B or C)."""
     s, q, p = sig["setup"], sig["quote"], sig["plan"]
+    dp = 2 if extra.get("decimals", 3) == 3 else extra["decimals"]   # Brent: 2 decimals as before
+    name = extra.get("name", "BRENT")
+    qd = max(3, extra.get("decimals", 3))
     long_ = s["direction"] == LONG
     side, px_name = ("BUY", "ask") if long_ else ("SELL", "bid")
     expiry = datetime.fromisoformat(sig["expires_at"])
-    rows = [("Entry", f"{side} {px_name} {s['zone_lo']:.2f}–{s['zone_hi']:.2f}"),
-            ("Stop", f"{s['stop']:.2f}"),
-            ("Target", f"{p['t1']:.2f} · {p['t2']:.2f}"),
+    rows = [("Entry", f"{side} {px_name} {s['zone_lo']:.{dp}f}–{s['zone_hi']:.{dp}f}"),
+            ("Stop", f"{s['stop']:.{dp}f}"),
+            ("Target", f"{p['t1']:.{dp}f} · {p['t2']:.{dp}f}"),
             ("Grade", f"{grade} · {reason}")]
     note = ("Research only: NOT confirmed by news. " + ("News conflicts: information only." if grade == "C"
             else "Chart setup without news support.") + " Paper and practice track it; a real alert may follow.")
     details = [
         f"{sig['id']} | research track ({s['kind']} {s['direction']}) | grade {grade}",
-        f"Quote {stamp(datetime.fromisoformat(q['time']))}: bid {q['bid']:.3f} / ask {q['ask']:.3f} / spread {q['spread']:.3f}",
-        f"Zone valid until {stamp(expiry)}; stop {s['stop']:.2f}; a 15-min close {'below' if long_ else 'above'} "
-        f"{s['invalid_close']:.2f} cancels it. Targets 1R {p['t1']:.2f} | 2R {p['t2']:.2f}; hold up to {extra['max_hold_hours']:g}h.",
+        f"Quote {stamp(datetime.fromisoformat(q['time']))}: bid {q['bid']:.{qd}f} / ask {q['ask']:.{qd}f} / spread {q['spread']:.{qd}f}",
+        f"Zone valid until {stamp(expiry)}; stop {s['stop']:.{dp}f}; a 15-min close {'below' if long_ else 'above'} "
+        f"{s['invalid_close']:.{dp}f} cancels it. Targets 1R {p['t1']:.{dp}f} | 2R {p['t2']:.{dp}f}; hold up to {extra['max_hold_hours']:g}h.",
         f"Why: {sig.get('why', '')}",
         f"Rules {sig['rules']} cfg {sig['config_hash']}. Paper tracking only; no order placed.",
     ]
+    if extra.get("research_only"):
+        note = (f"Research only ({name} research desk): no news check for this market. Paper tracking only; "
+                "no practice order and no real alert follow.")
     if families:
         note = (f"New research family ({', '.join(families)}; unproven, paper only). " + note)
         for o in others or []:
-            details.append(f"Also {o['setup']['kind']} {o['id']}: zone {o['setup']['zone_lo']:.2f}-{o['setup']['zone_hi']:.2f}, "
-                           f"stop {o['setup']['stop']:.2f}")
-    title = f"RESEARCH CALL · {' + '.join(families)} · {s['direction']} BRENT" if families else \
-        f"RESEARCH CALL · {s['direction']} BRENT"
-    return card("🔬", title, rows, note, f"research · NOT AN ALERT · {sig['id']}", details)
+            details.append(f"Also {o['setup']['kind']} {o['id']}: zone {o['setup']['zone_lo']:.{dp}f}-{o['setup']['zone_hi']:.{dp}f}, "
+                           f"stop {o['setup']['stop']:.{dp}f}")
+    title = f"RESEARCH CALL · {' + '.join(families)} · {s['direction']} {name}" if families else \
+        f"RESEARCH CALL · {s['direction']} {name}"
+    return card("🔬", title, rows, note, f"research · NOT AN ALERT · {sig['id']}", details, market=name)
 
 
 ENTRY_ONLY = ("This cancels the entry suggestion only. No broker order or position was "
@@ -155,18 +161,18 @@ def expired_text(sig_id: str, when: datetime) -> str:
                 "Entry window ended. Do not enter.", "paper · no order placed", [ENTRY_ONLY])
 
 
-def range_text(mid: float, low: float, high: float, inside: bool) -> str:
-    rows = [("Brent", f"{mid:.2f}"), ("Range", f"{low:g}–{high:g}")]
+def range_text(mid: float, low: float, high: float, inside: bool, market: str = "BRENT", dp: int = 2) -> str:
+    rows = [(market.title(), f"{mid:.{dp}f}"), ("Range", f"{low:g}–{high:g}")]
     if inside:
         return card("📏", "BACK IN RANGE", rows,
                     f"Back inside your {low:g}-{high:g} operating range. New entry suggestions "
-                    "resume when a setup qualifies.")
+                    "resume when a setup qualifies.", market=market)
     where = "above" if mid > high else "below"
     return card("📏", f"{where.upper()} RANGE", rows,
-                f"Brent is {where} your {low:g}-{high:g} operating range. New entry suggestions "
+                f"{market.title()} is {where} your {low:g}-{high:g} operating range. New entry suggestions "
                 "paused; monitoring continues.", "",
                 ["Open paper signals continue. The range is yours to change; "
-                 "the monitor never changes it."])
+                 "the monitor never changes it."], market=market)
 
 
 def ops_text(problem: str) -> str:
@@ -174,15 +180,15 @@ def ops_text(problem: str) -> str:
 
 
 def start_text(version: str, cfg_hash: str, account_line: str, experiment: str = "",
-               alerts_enabled: bool | None = None) -> str:
-    mode = "" if alerts_enabled is None else ("entry alerts ON" if alerts_enabled
+               alerts_enabled: bool | None = None, market: str = "BRENT", research_only: bool = False) -> str:
+    mode = "research cards only (no real alerts)" if research_only else "" if alerts_enabled is None else ("entry alerts ON" if alerts_enabled
                                              else "entry alerts OFF (shadow mode)")
     rows = [("Rules", version + (f", {experiment}" if experiment else "")), ("Config", cfg_hash)]
     if mode:
         rows.append(("Mode", mode, False))
     return card("⚙️", "MONITOR STARTED", rows, "Alerts only, no orders.", "test message",
                 [account_line, "This message also measures how long the notify command takes to "
-                 "accept a message (not when your phone shows it)."])
+                 "accept a message (not when your phone shows it)."], market=market)
 
 
 def switch_text(enabled: bool, m: dict) -> str:
