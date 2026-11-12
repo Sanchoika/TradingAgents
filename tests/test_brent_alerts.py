@@ -954,3 +954,23 @@ def test_grade_of_rows():
     assert g("agree", "LONG", "news-supported") == "A" and g("agree, counter-trend", "LONG", "news-supported, counter-trend") == "A"
     assert g("no-news", "LONG", "chart-led, no material news") == "B" and g("counter-trend without support") == "B"
     assert g("no-news (news unavailable)", "LONG", "chart-led, news unavailable") == "B"
+
+
+# ---------------------------------------------------------------------- audit fixes (2026-11-12)
+def test_news_down_alert_says_news_not_checked_and_grade_says_so(tmp_path):
+    mon, client, sender, clock, store = make(
+        tmp_path, news_view=NewsFake({"state": "unavailable", "why": "collector stopped"}))
+    mon.tick()
+    text = alerts(sender)[0]
+    assert "NEWS NOT CHECKED" in text and "collector stopped" in text
+    assert "Fresh check of" not in text
+
+
+def test_existing_research_calls_share_the_daily_cap(tmp_path):
+    bear = {**SUPPORT_ITEM, "bias": "bearish", "window": "conflict"}
+    view = {**NO_NEWS, "state": "none_material", "conflict_window": {"bearish": ["k1"]}, "items": [bear]}
+    mon, client, sender, clock, store = make(tmp_path, news_view=NewsFake(view))
+    mon.st["research_cards"] = {"day": "2026-11-03", "n": mon.cfg.research_call_cap}
+    mon.tick()
+    assert not [t for t in sender.texts if "RESEARCH CALL" in t]
+    assert any(e["event"] == "research_call_skipped" and "daily cap" in e["reason"] for e in store.events())
