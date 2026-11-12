@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import chart, families, info, messages, news, rules
+from . import chart, families, info, messages, news, outcomes, rules
 from .client import OandaReadError, Quote
 from .config import PAPER_RULES_VERSION, RULES_VERSION, BrentConfig, code_commit, manifest
 from .rules import LONG, Setup
@@ -48,6 +48,11 @@ def p90(xs: list[float]) -> float | None:
 def _setup(d: dict) -> Setup:
     """Setup from a state dict that may carry monitor bookkeeping keys."""
     return Setup(**{k: v for k, v in d.items() if k in Setup.__dataclass_fields__})
+
+
+def _carded(sig: dict) -> bool:
+    """A research card (setup or family) went out for this signal."""
+    return bool((sig.get("research_call") or {}).get("sent") or (sig.get("family_card") or {}).get("sent"))
 
 
 def _tracked(sig: dict) -> bool:
@@ -408,6 +413,7 @@ class Monitor:
             self.check_stale(q, now)
             self.check_range(q, now)
         self.update_signals(q, now)
+        self.post_checks(now)
         self.expire_setups(now)
         if self.cfg.research_families:
             self.guard_families(self.expire_families, now)
@@ -1093,6 +1099,10 @@ class Monitor:
             if q is not None:
                 self.directional_marks(sig, q, now)
             marks_done = len(sig["marks"]) == len(MARKS) or not _tracked(sig)
+            if sig["paper"]["state"] == "missed" and _carded(sig) and not sig.get("missed_queued"):
+                sig["missed_queued"] = True   # measurement only: what price did after an unfilled card
+                start = _dt(sig["decided_at"])
+                self._queue_post(sig, "missed", start, start + timedelta(hours=self.cfg.max_hold_hours))
             if sig["paper"]["state"] in ("missed", "closed") and marks_done \
                     and sig["status"] != "valid":
                 self.store.write("signal_done", id=sig["id"])
@@ -1227,6 +1237,50 @@ class Monitor:
                          gross_r=pp["gross_r"], net_r=pp["net_r"], mfe_r=round(pp["mfe"], 3),
                          mae_r=round(pp["mae"], 3), touched_t1=pp["t1"],
                          paper_rules=pp.get("rules", "paper-v1"), data_gap=pp.get("data_gap", False))
+        # measurement only: random entries in the same entry window, due once they have all run out
+        self._queue_post(sig, "baseline", _dt(sig["decided_at"]), _dt(sig["expires_at"]))
+
+    # ------------------------------------------- measurement only (missed cards, random baseline)
+    def _queue_post(self, sig: dict, kind: str, start: datetime, end: datetime):
+        due = end + timedelta(minutes=2) if kind == "missed" else \
+            max(end, _dt(sig["decided_at"]) + timedelta(seconds=60)) + timedelta(hours=self.cfg.max_hold_hours, minutes=2)
+        self.st.setdefault("post_checks", []).append({
+            "id": sig["id"], "kind": kind, "start": _iso(start), "end": _iso(end), "due": _iso(due),
+            "direction": sig["setup"]["direction"], "setup": sig["setup"]["kind"], "arm": sig.get("arm"),
+            "stop": sig["setup"]["stop"], "target": sig["plan"]["t2"], "risk": sig["paper"].get("risk")})
+
+    def post_checks(self, now: datetime):
+        """Due missed-card and baseline checks, at most one candle fetch per 2 minutes. Errors are
+        logged and never stop the bot; a check older than the candle history allows is dropped."""
+        todo = self.st.get("post_checks") or []
+        last = self.st.get("post_checks_at")
+        if not todo or (last and now - _dt(last) < timedelta(minutes=2)):
+            return
+        due = [c for c in todo if now >= _dt(c["due"])]
+        if not due:
+            return
+        c = due[0]
+        self.st["post_checks_at"] = _iso(now)
+        start = _dt(c["start"])
+        minutes = int((now - start).total_seconds() // 60) + 2
+        try:
+            if minutes > 5000:
+                self.store.write("post_check_skipped", id=c["id"], check=c["kind"], reason="older than 5000 minutes of candles")
+            else:
+                bars = self.client.candles(self.cfg.instrument, "M1", minutes)
+                if c["kind"] == "missed":
+                    out = outcomes.first_hit(bars, c["direction"], c["stop"], c["target"], start, _dt(c["end"]))
+                    self.store.write("missed_outcome", id=c["id"], outcome=out, setup_kind=c["setup"], arm=c["arm"],
+                                     hours=self.cfg.max_hold_hours)
+                else:
+                    b = outcomes.baseline(bars, c["risk"] or 0, start, _dt(c["end"]), self.cfg.max_hold_hours, c["id"])
+                    self.store.write("baseline", id=c["id"], setup_kind=c["setup"], arm=c["arm"],
+                                     mean_r=b["mean_r"] if b else None, n=b["n"] if b else 0)
+        except Exception as exc:
+            self.store.write("post_check_error", id=c["id"], check=c["kind"], error=str(exc)[:200])
+            if now - _dt(c["due"]) < timedelta(hours=6):
+                return   # retry on a later tick
+        todo.remove(c)
 
     def catch_up(self, sig: dict, now: datetime) -> bool:
         """Replay completed 1-minute bid/ask candles since the last reconciled time (after a
