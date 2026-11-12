@@ -133,6 +133,8 @@ def research_text(sig: dict, grade: str, reason: str, extra: dict, families: lis
         f"Why: {sig.get('why', '')}",
         f"Rules {sig['rules']} cfg {sig['config_hash']}. Paper tracking only; no order placed.",
     ]
+    if extra.get("score"):
+        details.append(extra["score"])
     if extra.get("research_only"):
         note = (f"Research only ({name} research desk): no news check for this market. Paper tracking only; "
                 "no practice order and no real alert follow.")
@@ -144,6 +146,26 @@ def research_text(sig: dict, grade: str, reason: str, extra: dict, families: lis
     title = f"RESEARCH CALL · {' + '.join(families)} · {s['direction']} {name}" if families else \
         f"RESEARCH CALL · {s['direction']} {name}"
     return card("🔬", title, rows, note, f"research · NOT AN ALERT · {sig['id']}", details, market=name)
+
+
+def score_line(name: str, scores: dict, kind: str) -> str:
+    """This market's running paper score and this setup's hit rate here (measurement only)."""
+    n = sum(k["n"] for k in scores.values())
+    if not n:
+        return f"Score so far ({name}, paper, after costs): no closed paper trades yet"
+    avg = sum(k["sum"] for k in scores.values()) / n
+    line = f"Score so far ({name}, paper, after costs): {n} trade{'s' if n != 1 else ''}, avg {avg:+.2f}R"
+    k = scores.get(kind)
+    return line + (f" · {kind} here: {k['wins']} of {k['n']} won ({k['wins'] / k['n']:.0%})" if k
+                   else f" · {kind} here: none closed yet")
+
+
+def result_text(sig: dict, name: str) -> str:
+    """One-line follow-up when the paper trade of a research card closes."""
+    s, pp = sig["setup"], sig["paper"]
+    return card("🔬", f"RESEARCH RESULT · {s['kind']} {s['direction']} {name}",
+                lead=f"{pp['net_r']:+.2f}R after costs ({pp['exit_reason']})",
+                foot=f"{sig['id']} · paper only", market=name)
 
 
 ENTRY_ONLY = ("This cancels the entry suggestion only. No broker order or position was "

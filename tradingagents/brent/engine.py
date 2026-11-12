@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import chart, families, info, messages, news, rules
+from . import chart, families, info, messages, news, outcomes, rules
 from .client import OandaReadError, Quote
 from .config import PAPER_RULES_VERSION, RULES_VERSION, BrentConfig, code_commit, manifest
 from .rules import LONG, Setup
@@ -48,6 +48,11 @@ def p90(xs: list[float]) -> float | None:
 def _setup(d: dict) -> Setup:
     """Setup from a state dict that may carry monitor bookkeeping keys."""
     return Setup(**{k: v for k, v in d.items() if k in Setup.__dataclass_fields__})
+
+
+def _carded(sig: dict) -> bool:
+    """A research card (setup or family) went out for this signal."""
+    return bool((sig.get("research_call") or {}).get("sent") or (sig.get("family_card") or {}).get("sent"))
 
 
 def _tracked(sig: dict) -> bool:
@@ -408,6 +413,7 @@ class Monitor:
             self.check_stale(q, now)
             self.check_range(q, now)
         self.update_signals(q, now)
+        self.post_checks(now)
         self.expire_setups(now)
         if self.cfg.research_families:
             self.guard_families(self.expire_families, now)
@@ -820,7 +826,7 @@ class Monitor:
             return
         grade, reason = ("B", NO_NEWS_CHECK) if self.cfg.research_only else grade_of(a, direction)
         sd["research_call_id"] = sig["id"]
-        text = messages.research_text(sig, grade, reason, self._card_extra())
+        text = messages.research_text(sig, grade, reason, self._card_extra(sig))
         ok, secs, _ = self.send(text, "research", sig["id"])
         self._count_research_card()
         sig.update(research_call={"grade": grade, "reason": reason, "sent": ok})
@@ -910,9 +916,28 @@ class Monitor:
         for direction, sigs in made.items():
             self._family_card(direction, sigs, now)
 
-    def _card_extra(self) -> dict:
+    def _card_extra(self, sig: dict) -> dict:
         return {"max_hold_hours": self.cfg.max_hold_hours, "decimals": self.cfg.price_decimals,
-                "name": self.cfg.display_name, "research_only": self.cfg.research_only}
+                "name": self.cfg.display_name, "research_only": self.cfg.research_only,
+                "score": messages.score_line(self.cfg.display_name, self._scores(), sig["setup"]["kind"])}
+
+    def _scores(self) -> dict:
+        """Measurement only: closed research paper trades (not real alerts, which shadow a research signal)
+        per setup kind {n, sum, wins}; rebuilt once from the journal."""
+        sc = self.st.get("scores")
+        if sc is None:
+            sc = self.st["scores"] = {}
+            ev = self.store.events()
+            kinds = {e["id"]: e["setup"]["kind"] for e in ev if e["event"] == "signal" and e.get("arm") != "combined"}
+            for e in ev:
+                if e["event"] == "paper_exit" and e["id"] in kinds:
+                    self._score(sc, kinds[e["id"]], e["net_r"])
+        return sc
+
+    @staticmethod
+    def _score(sc: dict, kind: str, net_r: float):
+        k = sc.setdefault(kind, {"n": 0, "sum": 0.0, "wins": 0})
+        k.update(n=k["n"] + 1, sum=round(k["sum"] + net_r, 3), wins=k["wins"] + (net_r > 0))
 
     def research_card_blocked(self, direction: str, sigs: list[dict], now: datetime) -> str | None:
         """Shared by every research card: a card or real alert the same way in the last 15 min, or the daily cap."""
@@ -944,7 +969,7 @@ class Monitor:
             nv = {"state": "unavailable", "why": str(exc)}
         grade, reason = ("B", NO_NEWS_CHECK) if self.cfg.research_only else families.grade(nv, direction)
         names = [x["setup"]["kind"] for x in sigs]
-        text = messages.research_text(sigs[0], grade, reason, self._card_extra(),
+        text = messages.research_text(sigs[0], grade, reason, self._card_extra(sigs[0]),
                                       families=names, others=sigs[1:])
         ok, secs, _ = self.send(text, "research", sigs[0]["id"])
         self._count_research_card()
@@ -1093,6 +1118,10 @@ class Monitor:
             if q is not None:
                 self.directional_marks(sig, q, now)
             marks_done = len(sig["marks"]) == len(MARKS) or not _tracked(sig)
+            if sig["paper"]["state"] == "missed" and _carded(sig) and not sig.get("missed_queued"):
+                sig["missed_queued"] = True   # measurement only: what price did after an unfilled card
+                start = _dt(sig["decided_at"])
+                self._queue_post(sig, "missed", start, start + timedelta(hours=self.cfg.max_hold_hours))
             if sig["paper"]["state"] in ("missed", "closed") and marks_done \
                     and sig["status"] != "valid":
                 self.store.write("signal_done", id=sig["id"])
@@ -1223,10 +1252,59 @@ class Monitor:
         net *= (1 - self.cfg.fx_loss_pct / 100) if net > 0 else (1 + self.cfg.fx_loss_pct / 100)
         pp.update(state="closed", exit=round(px, 4), exit_time=_iso(now), exit_reason=reason,
                   exit_basis=how, gross_r=round(gross / pp["risk"], 3), net_r=round(net / pp["risk"], 3))
+        if sig.get("arm") != "combined":   # before the write: a rebuild reads the journal
+            self._score(self._scores(), sig["setup"]["kind"], pp["net_r"])
         self.store.write("paper_exit", id=sig["id"], exit=pp["exit"], reason=reason, basis=how,
                          gross_r=pp["gross_r"], net_r=pp["net_r"], mfe_r=round(pp["mfe"], 3),
                          mae_r=round(pp["mae"], 3), touched_t1=pp["t1"],
                          paper_rules=pp.get("rules", "paper-v1"), data_gap=pp.get("data_gap", False))
+        if _carded(sig):
+            self.send_notice(messages.result_text(sig, self.cfg.display_name), "research_result", sig["id"], now)
+        # measurement only: random entries 2h either side of the signal, due once they have all run out
+        at = _dt(sig["decided_at"])
+        self._queue_post(sig, "baseline", at - timedelta(hours=2), at + timedelta(hours=2))
+
+    # ------------------------------------------- measurement only (missed cards, random baseline)
+    def _queue_post(self, sig: dict, kind: str, start: datetime, end: datetime):
+        due = end + timedelta(minutes=2) if kind == "missed" else \
+            end + timedelta(hours=self.cfg.max_hold_hours, minutes=2)
+        self.st.setdefault("post_checks", []).append({
+            "id": sig["id"], "kind": kind, "start": _iso(start), "end": _iso(end), "due": _iso(due),
+            "direction": sig["setup"]["direction"], "setup": sig["setup"]["kind"], "arm": sig.get("arm"),
+            "stop": sig["setup"]["stop"], "target": sig["plan"]["t2"], "risk": sig["paper"].get("risk")})
+
+    def post_checks(self, now: datetime):
+        """Due missed-card and baseline checks, at most one candle fetch per 2 minutes. Errors are
+        logged and never stop the bot; a check older than the candle history allows is dropped."""
+        todo = self.st.get("post_checks") or []
+        last = self.st.get("post_checks_at")
+        if not todo or (last and now - _dt(last) < timedelta(minutes=2)):
+            return
+        due = [c for c in todo if now >= _dt(c["due"])]
+        if not due:
+            return
+        c = due[0]
+        self.st["post_checks_at"] = _iso(now)
+        start = _dt(c["start"])
+        minutes = int((now - start).total_seconds() // 60) + 2
+        try:
+            if minutes > 5000:
+                self.store.write("post_check_skipped", id=c["id"], check=c["kind"], reason="older than 5000 minutes of candles")
+            else:
+                bars = self.client.candles(self.cfg.instrument, "M1", minutes)
+                if c["kind"] == "missed":
+                    out = outcomes.first_hit(bars, c["direction"], c["stop"], c["target"], start, _dt(c["end"]))
+                    self.store.write("missed_outcome", id=c["id"], outcome=out, setup_kind=c["setup"], arm=c["arm"],
+                                     hours=self.cfg.max_hold_hours)
+                else:
+                    b = outcomes.baseline(bars, c["risk"] or 0, start, _dt(c["end"]), self.cfg.max_hold_hours, c["id"])
+                    self.store.write("baseline", id=c["id"], setup_kind=c["setup"], arm=c["arm"],
+                                     mean_r=b["mean_r"] if b else None, n=b["n"] if b else 0)
+        except Exception as exc:
+            self.store.write("post_check_error", id=c["id"], check=c["kind"], error=str(exc)[:200])
+            if now - _dt(c["due"]) < timedelta(hours=6):
+                return   # retry on a later tick
+        todo.remove(c)
 
     def catch_up(self, sig: dict, now: datetime) -> bool:
         """Replay completed 1-minute bid/ask candles since the last reconciled time (after a
