@@ -36,6 +36,7 @@
 | WTICO_USD | WTI | 0.08 | 3 | 30–200 | yes | Wed 10:15–10:45 (+ the same shifted dates) |
 | EUR_USD | EURUSD | 0.00030 | 5 | 0.8–1.6 | no | none |
 | NAS100_USD | NAS100 | 3.0 | 1 | 5000–50000 | no | none |
+| USD_CAD | USD/CAD | 0.00030 | 5 | 1.0–2.0 | no | none (added 2026-11-12, Irakli) |
 
 - **Spread limits:** about 1.5× the typical spreads NORTH recorded (gold 0.42, EUR/USD 0.0002, NAS100 2.3).
 - **Other rule fields** (break/zone/stop in ATR units, arm hours, hold hours) are the same as Brent's, because they scale with each market's own ATR.

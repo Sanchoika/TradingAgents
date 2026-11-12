@@ -61,4 +61,4 @@ def test_shipped_market_configs_are_research_only_with_their_own_journals():
         assert c.research_call_cap <= 3 and c.journal_dir.endswith(p.stem) and c.instrument != "BCO_USD"
         assert c.eia_family == (c.instrument == "WTICO_USD")
         seen.add(c.instrument)
-    assert seen == {"XAU_USD", "WTICO_USD", "EUR_USD", "NAS100_USD"}
+    assert seen == {"XAU_USD", "WTICO_USD", "EUR_USD", "NAS100_USD", "USD_CAD"}
