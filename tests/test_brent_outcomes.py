@@ -139,6 +139,9 @@ def test_research_card_shows_the_score_line_and_a_result_card_follows_only_a_car
     line = "Score so far (GOLD, paper, after costs): 3 trades, avg +0.49R · ORB_NY here: 1 of 2 won (50%)"
     assert line in messages.research_text(sig, "B", "x", mon._card_extra(sig))
     # a restart without the running stats rebuilds them once from the journal (kind unknown: no signal event)
+    for i, k in (("SH-1", "ORB_NY"), ("SH-2", "ORB_NY"), ("SH-3", "BREAKOUT"), ("BR-9", "BREAKOUT")):
+        store.write("signal", id=i, arm="combined" if i.startswith("BR") else "chart-only", setup={"kind": k})
+    store.write("paper_exit", id="BR-9", net_r=5.0)            # a real alert shadows a research signal: not counted
     del mon.st["scores"]
     assert sum(k["n"] for k in mon._scores().values()) == 3
     assert round(sum(k["sum"] for k in mon._scores().values()), 3) == 1.465     # fx_loss_pct 1% each way

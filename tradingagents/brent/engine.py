@@ -922,15 +922,16 @@ class Monitor:
                 "score": messages.score_line(self.cfg.display_name, self._scores(), sig["setup"]["kind"])}
 
     def _scores(self) -> dict:
-        """Measurement only: closed paper trades per setup kind {n, sum, wins}; rebuilt once from the journal."""
+        """Measurement only: closed research paper trades (not real alerts, which shadow a research signal)
+        per setup kind {n, sum, wins}; rebuilt once from the journal."""
         sc = self.st.get("scores")
         if sc is None:
             sc = self.st["scores"] = {}
             ev = self.store.events()
-            kinds = {e["id"]: e["setup"]["kind"] for e in ev if e["event"] == "signal"}
+            kinds = {e["id"]: e["setup"]["kind"] for e in ev if e["event"] == "signal" and e.get("arm") != "combined"}
             for e in ev:
-                if e["event"] == "paper_exit":
-                    self._score(sc, kinds.get(e["id"], "?"), e["net_r"])
+                if e["event"] == "paper_exit" and e["id"] in kinds:
+                    self._score(sc, kinds[e["id"]], e["net_r"])
         return sc
 
     @staticmethod
@@ -1251,7 +1252,8 @@ class Monitor:
         net *= (1 - self.cfg.fx_loss_pct / 100) if net > 0 else (1 + self.cfg.fx_loss_pct / 100)
         pp.update(state="closed", exit=round(px, 4), exit_time=_iso(now), exit_reason=reason,
                   exit_basis=how, gross_r=round(gross / pp["risk"], 3), net_r=round(net / pp["risk"], 3))
-        self._score(self._scores(), sig["setup"]["kind"], pp["net_r"])   # before the write: a rebuild reads the journal
+        if sig.get("arm") != "combined":   # before the write: a rebuild reads the journal
+            self._score(self._scores(), sig["setup"]["kind"], pp["net_r"])
         self.store.write("paper_exit", id=sig["id"], exit=pp["exit"], reason=reason, basis=how,
                          gross_r=pp["gross_r"], net_r=pp["net_r"], mfe_r=round(pp["mfe"], 3),
                          mae_r=round(pp["mae"], 3), touched_t1=pp["t1"],
