@@ -826,7 +826,7 @@ class Monitor:
             return
         grade, reason = ("B", NO_NEWS_CHECK) if self.cfg.research_only else grade_of(a, direction)
         sd["research_call_id"] = sig["id"]
-        text = messages.research_text(sig, grade, reason, self._card_extra())
+        text = messages.research_text(sig, grade, reason, self._card_extra(sig))
         ok, secs, _ = self.send(text, "research", sig["id"])
         self._count_research_card()
         sig.update(research_call={"grade": grade, "reason": reason, "sent": ok})
@@ -916,9 +916,27 @@ class Monitor:
         for direction, sigs in made.items():
             self._family_card(direction, sigs, now)
 
-    def _card_extra(self) -> dict:
+    def _card_extra(self, sig: dict) -> dict:
         return {"max_hold_hours": self.cfg.max_hold_hours, "decimals": self.cfg.price_decimals,
-                "name": self.cfg.display_name, "research_only": self.cfg.research_only}
+                "name": self.cfg.display_name, "research_only": self.cfg.research_only,
+                "score": messages.score_line(self.cfg.display_name, self._scores(), sig["setup"]["kind"])}
+
+    def _scores(self) -> dict:
+        """Measurement only: closed paper trades per setup kind {n, sum, wins}; rebuilt once from the journal."""
+        sc = self.st.get("scores")
+        if sc is None:
+            sc = self.st["scores"] = {}
+            ev = self.store.events()
+            kinds = {e["id"]: e["setup"]["kind"] for e in ev if e["event"] == "signal"}
+            for e in ev:
+                if e["event"] == "paper_exit":
+                    self._score(sc, kinds.get(e["id"], "?"), e["net_r"])
+        return sc
+
+    @staticmethod
+    def _score(sc: dict, kind: str, net_r: float):
+        k = sc.setdefault(kind, {"n": 0, "sum": 0.0, "wins": 0})
+        k.update(n=k["n"] + 1, sum=round(k["sum"] + net_r, 3), wins=k["wins"] + (net_r > 0))
 
     def research_card_blocked(self, direction: str, sigs: list[dict], now: datetime) -> str | None:
         """Shared by every research card: a card or real alert the same way in the last 15 min, or the daily cap."""
@@ -950,7 +968,7 @@ class Monitor:
             nv = {"state": "unavailable", "why": str(exc)}
         grade, reason = ("B", NO_NEWS_CHECK) if self.cfg.research_only else families.grade(nv, direction)
         names = [x["setup"]["kind"] for x in sigs]
-        text = messages.research_text(sigs[0], grade, reason, self._card_extra(),
+        text = messages.research_text(sigs[0], grade, reason, self._card_extra(sigs[0]),
                                       families=names, others=sigs[1:])
         ok, secs, _ = self.send(text, "research", sigs[0]["id"])
         self._count_research_card()
@@ -1233,17 +1251,21 @@ class Monitor:
         net *= (1 - self.cfg.fx_loss_pct / 100) if net > 0 else (1 + self.cfg.fx_loss_pct / 100)
         pp.update(state="closed", exit=round(px, 4), exit_time=_iso(now), exit_reason=reason,
                   exit_basis=how, gross_r=round(gross / pp["risk"], 3), net_r=round(net / pp["risk"], 3))
+        self._score(self._scores(), sig["setup"]["kind"], pp["net_r"])   # before the write: a rebuild reads the journal
         self.store.write("paper_exit", id=sig["id"], exit=pp["exit"], reason=reason, basis=how,
                          gross_r=pp["gross_r"], net_r=pp["net_r"], mfe_r=round(pp["mfe"], 3),
                          mae_r=round(pp["mae"], 3), touched_t1=pp["t1"],
                          paper_rules=pp.get("rules", "paper-v1"), data_gap=pp.get("data_gap", False))
-        # measurement only: random entries in the same entry window, due once they have all run out
-        self._queue_post(sig, "baseline", _dt(sig["decided_at"]), _dt(sig["expires_at"]))
+        if _carded(sig):
+            self.send_notice(messages.result_text(sig, self.cfg.display_name), "research_result", sig["id"], now)
+        # measurement only: random entries 2h either side of the signal, due once they have all run out
+        at = _dt(sig["decided_at"])
+        self._queue_post(sig, "baseline", at - timedelta(hours=2), at + timedelta(hours=2))
 
     # ------------------------------------------- measurement only (missed cards, random baseline)
     def _queue_post(self, sig: dict, kind: str, start: datetime, end: datetime):
         due = end + timedelta(minutes=2) if kind == "missed" else \
-            max(end, _dt(sig["decided_at"]) + timedelta(seconds=60)) + timedelta(hours=self.cfg.max_hold_hours, minutes=2)
+            end + timedelta(hours=self.cfg.max_hold_hours, minutes=2)
         self.st.setdefault("post_checks", []).append({
             "id": sig["id"], "kind": kind, "start": _iso(start), "end": _iso(end), "due": _iso(due),
             "direction": sig["setup"]["direction"], "setup": sig["setup"]["kind"], "arm": sig.get("arm"),
