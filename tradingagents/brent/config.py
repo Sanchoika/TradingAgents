@@ -103,6 +103,8 @@ class BrentConfig:
     display_name: str = "BRENT"
     eia_family: bool = True          # EIA_REACTION family (oil markets only)
     research_call_cap: int = 8
+    # Strategy lab v1 (tradingagents/brent/lab.py): frozen rule files written by NORTH; silent paper twins only.
+    lab_dir: str = "/var/lib/north/lab/active"
     family_arm_hours: float = 2.0
     info_briefs_et: list[str] = field(default_factory=lambda: ["07:00", "12:00"])
     info_per_day: int = 4             # non-urgent INFO per day, including the briefs

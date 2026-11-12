@@ -62,3 +62,11 @@ The same go/no-go rule as Brent, **per market and per family**: checkpoint at 30
 - **Paper costs:** WTI keeps Brent's financing (45%/yr). Gold, EUR/USD and NAS100 use 8%/yr, an estimate, not OANDA's exact rates.
 - **NORTH does not follow them:** NORTH reads only the Brent journal for paper and practice. The market journals reach NORTH only as a read-only scorecard section ("Research desk · GOLD …", NORTH 5.9).
 - **Not built in v1:** a separate health timer per market (systemd restarts a crashed instance); per-market dashboard pages; the shared risk book code (design above; nothing to enforce while practice is off for these markets).
+
+## Strategy lab v1 (2026-11-12, list item 2)
+
+- **What a lab setup is:** a frozen variant of an existing setup on one market. It may change only the direction (both, LONG or SHORT), the New York hours, the stop size (0.5–2× the base stop), the target (1–4R) and the holding time (1–24 h). The rule file's hash covers all of it, so an edited file is refused, and a changed idea is a new idea with its own count.
+- **Where the files live:** NORTH's weekly lab job writes them to `/var/lib/north/lab/active/<INSTRUMENT>/` (at most 3 per market). A file `OFF` in that folder switches the lab off.
+- **How a lab setup runs:** when the base setup issues its research signal, each matching rule gets a silent paper twin (arm `lab`, ids `LB-…`). It uses the same entry window and fill rules, with the rule's stop, target and hold.
+- **What it never does:** send a card or a real alert, place a practice order (NORTH follows `chart-only` only), or change the live rules or fingerprint. `lab_dir` is not a rule field.
+- **Retiring:** each lab setup has its own count and is judged by the go/no-go rule: checkpoint at 30; at 50 it passes only if the low end of the range is above 0, the average is at least +0.3R and the worst losing run is at most 8R. A pass is reported to Irakli and never switched on automatically.

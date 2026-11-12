@@ -43,6 +43,8 @@ ARM_DIFFERENCES = (
 
 def group_of(sg: dict, accepted: set | None = None) -> str:
     """Reporting group: arm, then (combined) label and whether it was actually sent."""
+    if sg.get("arm") == "lab":
+        return f"research lab {sg.get('lab', '?')} {(sg.get('setup') or {}).get('kind', '?')} (paper only)"
     if sg.get("arm") == "family":
         return f"research family {(sg.get('setup') or {}).get('kind', '?')} (paper only)"
     if sg.get("arm", "combined") != "combined":
@@ -75,7 +77,7 @@ def progression(events: list[dict]) -> dict:
     detected = {e["key"] for e in events if e["event"] in ("watch", "candidate", "suppressed")
                 and e.get("key")}
     detected |= {(e.get("setup") or {}).get("key") for e in events
-                 if e["event"] == "signal" and e.get("arm") != "family"} - {None}
+                 if e["event"] == "signal" and e.get("arm") not in ("family", "lab")} - {None}
     suppressed: dict[str, list[str]] = {}
     for e in events:
         if e["event"] == "suppressed" and e.get("key"):
