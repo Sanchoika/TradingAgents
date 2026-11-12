@@ -414,6 +414,8 @@ class Monitor:
             self.check_range(q, now)
         self.update_signals(q, now)
         self.post_checks(now)
+        if not self.cfg.research_only:
+            self.guard_news_outcomes(now)
         self.expire_setups(now)
         if self.cfg.research_families:
             self.guard_families(self.expire_families, now)
@@ -1311,6 +1313,42 @@ class Monitor:
                         paper={"state": "waiting"}, marks={})
             self.store.write("signal", **{k: v for k, v in twin.items() if k != "paper"})
             self.st["signals"][tid] = twin
+
+    # ---------------------------------------- measurement only: news brain (changes no grade or rule)
+    def guard_news_outcomes(self, now: datetime):
+        last = self.st.get("news_outcomes_at")
+        if last and now - _dt(last) < timedelta(minutes=10):
+            return
+        self.st["news_outcomes_at"] = _iso(now)
+        try:
+            self.news_outcomes(now)
+        except Exception as exc:   # measurement never stops the bot
+            self.store.write("news_outcome_error", error=f"{type(exc).__name__}: {exc}"[:300])
+
+    def news_outcomes(self, now: datetime):
+        """About 4 h after each classified headline: how far Brent moved 15/60/240 min after the bot
+        first saw it (daily-ATR units), with its source, category, bias, materiality and whether the
+        article text was read. One record per headline; the news grades are not touched."""
+        done = self.st.setdefault("news_scored", [])
+        due = [i for i in news.classified_items(self.cfg.journal_dir, now, hours=8)
+               if i["key"] not in done and now - _dt(i["first_seen"]) >= timedelta(hours=4, minutes=2)]
+        atr = (self.st.get("ctx") or {}).get("atr")
+        if not due or not atr:
+            return
+        oldest = min(_dt(i["first_seen"]) for i in due)
+        bars = self.client.candles(self.cfg.instrument, "M1", min(5000, int((now - oldest).total_seconds() // 60) + 5))
+        for i in due:
+            c = i["classification"]
+            mv = outcomes.news_moves(bars, _dt(i["first_seen"]), atr)
+            sign = {"bullish": 1, "bearish": -1}.get(c.get("bias"), 0)
+            m60 = (mv or {}).get("m60")   # positive signed move = the headline called the direction
+            self.store.write("news_outcome", key=i["key"], publisher=(i.get("publisher") or "")[:60],
+                             feed=(i.get("feed") or "")[:40], category=c.get("category"), bias=c.get("bias"),
+                             status=c.get("status"), scope=c.get("scope"), relevant=c.get("relevant"),
+                             material=i.get("material"), evidence=i.get("evidence"), first_seen=i["first_seen"],
+                             atr=atr, moves=mv, signed_m60=round(m60 * sign, 3) if sign and m60 is not None else None)
+            done.append(i["key"])
+        del done[:-3000]
 
     # ------------------------------------------- measurement only (missed cards, random baseline)
     def _queue_post(self, sig: dict, kind: str, start: datetime, end: datetime):

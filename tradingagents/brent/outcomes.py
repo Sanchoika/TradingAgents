@@ -28,6 +28,24 @@ def first_hit(bars: list[dict], direction: str, stop: float, target: float,
     return "neither"
 
 
+def news_moves(bars: list[dict], first_seen: datetime, atr: float, after=(15, 60, 240)) -> dict | None:
+    """Mid-price move from the minute a headline was first seen to +15/+60/+240 minutes, in daily-ATR
+    units (positive = up). None when the candles do not cover the start or the ATR is unknown."""
+    if not atr or atr <= 0:
+        return None
+    mid = {b["time"].replace(second=0, microsecond=0): (b["bid_c"] + b["ask_c"]) / 2
+           for b in bars if b.get("complete", True)}
+    t0 = first_seen.replace(second=0, microsecond=0)
+    start = mid.get(t0 - timedelta(minutes=1)) or mid.get(t0)
+    if start is None:
+        return None
+    out = {}
+    for m in after:
+        later = [mid[t] for t in sorted(mid) if t0 <= t <= t0 + timedelta(minutes=m)]
+        out[f"m{m}"] = round((later[-1] - start) / atr, 3) if later else None
+    return out
+
+
 def _one(bars: list[dict], i: int, d: int, risk: float, hold_end: datetime) -> float | None:
     """Paper-v2-like trade from bar i's open: entry at the executable side + 1 spread, stop and
     2R target at the given risk, exit at the time limit. Returns R (no financing), None if no data."""
