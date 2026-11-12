@@ -70,3 +70,12 @@ The same go/no-go rule as Brent, **per market and per family**: checkpoint at 30
 - **How a lab setup runs:** when the base setup issues its research signal, each matching rule gets a silent paper twin (arm `lab`, ids `LB-…`). It uses the same entry window and fill rules, with the rule's stop, target and hold.
 - **What it never does:** send a card or a real alert, place a practice order (NORTH follows `chart-only` only), or change the live rules or fingerprint. `lab_dir` is not a rule field.
 - **Retiring:** each lab setup has its own count and is judged by the go/no-go rule: checkpoint at 30; at 50 it passes only if the low end of the range is above 0, the average is at least +0.3R and the worst losing run is at most 8R. A pass is reported to Irakli and never switched on automatically.
+
+## News brain v1, measured only (2026-11-12, list item 3)
+
+- **What it records:** about 4 h after each classified Brent headline, the bot writes one `news_outcome` record:
+  - how far Brent's mid price moved 15, 60 and 240 minutes after the bot first saw the headline, in daily-ATR units;
+  - the move signed by the headline's bias (positive = it called the direction);
+  - its source, category, status, scope, whether it was material, and whether the article text was read (`full_text`) or only the snippet.
+- **What it doesn't change:** no new model call (it reads the existing classifications), no change to news grades, the news policy or any rule. NORTH shows the results ("News brain").
+- **Why:** the grades may only change once this evidence shows which sources and headline types call direction, whether material items move Brent more, and whether full-article reading helps. Any change is proposed to Irakli, never made automatically.
