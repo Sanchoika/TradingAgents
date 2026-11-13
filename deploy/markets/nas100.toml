@@ -17,3 +17,4 @@ eia_family = false
 financing_pct_year = 8.0
 notify_command = "hermes send --to telegram --quiet"
 journal_dir = "~/.tradingagents/markets/nas100"
+orb_ny_start = "09:30"   # 2026-11-13 Irakli: the NAS100 opening range starts at the 09:30 ET stock open (families-v1.1)

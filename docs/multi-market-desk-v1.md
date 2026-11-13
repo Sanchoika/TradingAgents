@@ -90,3 +90,9 @@ The same go/no-go rule as Brent, **per market and per family**: checkpoint at 30
   - **broker_tp:** the 2R take-profit and the stop rest at the broker, with no time exit (up to 24 h).
 - **Conventions:** paper-v2: exit-side prices, a stop fills one spread worse or at a gapped open, and a candle touching both the stop and the target counts as the stop. No financing.
 - **What it never does:** change a practice order, the paper rules or the live rules. NORTH compares each variant with plain hold on the same trades ("Position management"). A switch would be proposed to Irakli once a variant is clearly better on 30+ trades.
+
+## NAS100 opening range at the stock open (2026-11-13)
+
+- **NAS100:** `orb_ny_start = "09:30"`. The ORB_NY family on this desk uses the 09:30–10:00 ET range, labelled `families-v1.1`, and its count restarts.
+- **Unchanged:** the other desks and Brent stay at 09:00 (`families-v1`).
+

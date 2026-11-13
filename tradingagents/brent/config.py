@@ -102,6 +102,7 @@ class BrentConfig:
     price_decimals: int = 3
     display_name: str = "BRENT"
     eia_family: bool = True          # EIA_REACTION family (oil markets only)
+    orb_ny_start: str = "09:00"     # ORB_NY opening range start, New York time (NAS100: "09:30", families-v1.1)
     research_call_cap: int = 8
     # Strategy lab v1 (tradingagents/brent/lab.py): frozen rule files written by NORTH; silent paper twins only.
     lab_dir: str = "/var/lib/north/lab/active"
@@ -133,6 +134,9 @@ class BrentConfig:
             raise ValueError("risk_pct must be in (0, 1]; keep risk small")
         for b in self.blackouts:
             parse_blackout(b)
+        h, _, m = self.orb_ny_start.partition(":")
+        if not (h.isdigit() and m.isdigit() and 0 <= int(h) <= 22 and int(m) in (0, 15, 30, 45)):
+            raise ValueError("orb_ny_start must be HH:MM on the 15-minute grid")
 
     def config_hash(self) -> str:
         rules = {k: asdict(self)[k] for k in RULE_FIELDS}

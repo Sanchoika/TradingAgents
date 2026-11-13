@@ -168,3 +168,22 @@ def test_eia_holiday_week_uses_the_shifted_release_veterans_day_2026():
     assert families.eia_release_candle(families.ny(xmas)) and not families.eia_release_candle(
         families.ny(datetime(2025, 12, 24, 15, 30, tzinfo=UTC)))
     assert families.eia_release_candle(families.ny(datetime(2026, 11, 18, 15, 30, tzinfo=UTC)))   # normal week
+
+
+def test_nas100_opening_range_starts_at_the_stock_open_as_families_v1_1():
+    from tradingagents.brent.config import BrentConfig, load_config
+    o1 = bar(datetime(2026, 11, 11, 14, 30, tzinfo=UTC), 100, 100.4, 99.9, 100.2)    # 09:30 ET
+    o2 = bar(datetime(2026, 11, 11, 14, 45, tzinfo=UTC), 100.2, 100.5, 100.0, 100.3)
+    brk = bar(datetime(2026, 11, 11, 15, 15, tzinfo=UTC), 100.3, 100.8, 100.3, 100.7)  # 10:15 ET
+    s = families.detect(brk, brk["time"] + timedelta(minutes=15), [o1, o2, brk], A, None, 2, orb_ny_start="09:30")
+    assert [(x.kind, x.direction, x.level) for x in s] == [("ORB_NY", LONG, 100.5)]
+    early = [bar(datetime(2026, 11, 11, 14, 0, tzinfo=UTC), 100, 100.1, 99.95, 100.0)] + [o1, o2, brk]
+    assert families.detect(brk, brk["time"], early, A, None, 2) == [] or \
+        families.detect(brk, brk["time"], early, A, None, 2)[0].level != 100.5          # 09:00 range differs
+    assert families.version() == "families-v1" and families.version("09:30") == "families-v1.1"
+    assert load_config("deploy/markets/nas100.toml").orb_ny_start == "09:30"
+    assert all(load_config(f"deploy/markets/{m}.toml").orb_ny_start == "09:00" for m in ("gold", "wti", "eurusd", "usdcad"))
+    assert BrentConfig().config_hash() == BrentConfig(orb_ny_start="09:30").config_hash()   # not a Brent rule field
+    import pytest
+    with pytest.raises(ValueError):
+        BrentConfig(orb_ny_start="09:10")
