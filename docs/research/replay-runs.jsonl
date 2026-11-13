@@ -1,0 +1,2 @@
+{"name": "replay-01-families-v1-brent", "hash": "b0bc87be1331dd9f", "ran_at": "2026-11-12T23:47Z", "passes_filter": false, "n": 1286, "mean": -0.267, "commit": "9d0b5c2", "note": "logged by hand: ran before the run log existed"}
+{"name": "replay-02-live-breakout-brent", "hash": "3703ed52599acd49", "ran_at": "2026-11-13T00:10:03.356897+00:00", "passes_filter": false, "n": 708, "mean": -0.156, "commit": "c82bccfb6a465190984d1e17a5303b44e2f51127", "dirty": false, "config_sha256": "65fd40274fa39fb6", "csv_sha256": "68f853b5e8d165d2"}

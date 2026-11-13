@@ -1,0 +1,9 @@
+{"name": "replay-02-live-breakout-brent",
+ "written": "2026-11-13T00:10:00Z",
+ "hypothesis": "The live Brent setups (BREAKOUT and FAILED_BREAK of yesterday's high/low, brent-exp-4 rules as in the bot's code defaults with the live spread/quote-age/EIA blackout settings) show a positive net R per trade on 2024-01-01..2026-10-31 after paper-v2 costs, in both halves, and beat a coin-flip direction at the same minutes. In-sample history (the setups were designed and tuned on it): a pass only supports continuing the forward count; a fail is a warning for the research track, not a stop of the live count.",
+ "instrument": "BCO_USD",
+ "setups": ["BREAKOUT", "FAILED_BREAK"],
+ "variant": null,
+ "period": {"start": "2024-01-01", "end": "2026-10-31"},
+ "pass_rule": {"min_trades": 200, "ci_low_above": 0, "mean_at_least": 0.1},
+ "config_overrides": {"max_spread": 0.12, "max_quote_age_seconds": 30, "blackouts": ["2 10:15-10:45"]}}
