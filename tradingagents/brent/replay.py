@@ -174,7 +174,7 @@ def simulate(m1: list[dict], cfg: BrentConfig, setups: list[str], variant: dict 
                       if s.kind in want_base]
         if want_fam:
             found += [s for s in families.detect(bar, close_t, recent, a, daily, cfg.family_arm_hours,
-                                                 cfg.price_decimals, cfg.eia_family) if s.kind in want_fam]
+                                                 cfg.price_decimals, cfg.eia_family, cfg.orb_ny_start) if s.kind in want_fam]
         for s in found:
             if s.key in seen:
                 continue

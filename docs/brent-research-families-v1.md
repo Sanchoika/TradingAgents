@@ -75,3 +75,11 @@ Written and frozen on **2026-11-11, before looking at any results**. Nothing her
 - `family_arm_hours = 2`
 
 None of these is in `RULE_FIELDS`, so the existing family's config fingerprint does not change.
+
+## Amendment: families v1.1 for the NAS100 desk (2026-11-13, Irakli)
+
+- **Change:** on the NAS100 desk, the ORB_NY opening range starts at the **09:30 ET stock open** (09:30–10:00), not at 09:00, which is pre-market for stocks. Setting: `orb_ny_start = "09:30"` in deploy/markets/nas100.toml.
+- **Labels:** that desk's family signals are labelled `families-v1.1`, so its count restarts. Every other rule is unchanged.
+- **Unchanged:** Brent and the other desks keep `families-v1` (09:00). `orb_ny_start` is not a rule field, so Brent's fingerprint (6f42ab) is unchanged.
+- **Why:** found in the final audit (item 8); approved by Irakli.
+

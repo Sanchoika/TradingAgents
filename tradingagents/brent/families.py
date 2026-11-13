@@ -14,6 +14,11 @@ from .rules import LONG, SHORT, Setup, ny, previous_day
 FAMILIES = ("EIA_REACTION", "ORB_LONDON", "ORB_NY", "RANGE_REVERSAL", "TREND_PULLBACK")
 FAMILIES_VERSION = "families-v1"
 SESSIONS = (("ORB_LONDON", 3), ("ORB_NY", 9))   # opening range: the first 30 min after HH:00 ET
+FAMILIES_V11 = "families-v1.1"   # 2026-11-13 (Irakli): a desk with its own ORB_NY start (NAS100: 09:30 ET stock open)
+
+
+def version(orb_ny_start: str = "09:00") -> str:
+    return FAMILIES_VERSION if orb_ny_start == "09:00" else FAMILIES_V11
 # EIA weekly release shifts (holiday weeks), from the EIA schedule page (the same source NORTH 5.0 reads),
 # keyed by the standard release Wednesday -> actual release (New York time). EIA had published shifts only
 # through 2026-11-12 when this was written; an unknown week uses Wednesday 10:30 ET. Update when EIA
@@ -37,7 +42,7 @@ def eia_release_candle(t: datetime) -> bool:
 
 
 def detect(bar: dict, close_t: datetime, bars: list[dict], a: float, daily: list[dict] | None,
-           arm_hours: float, decimals: int = 3, eia: bool = True) -> list[Setup]:
+           arm_hours: float, decimals: int = 3, eia: bool = True, orb_ny_start: str = "09:00") -> list[Setup]:
     """Family setups armed by one completed 15-minute candle (mid prices). Pure function."""
     if a <= 0:
         return []
@@ -63,8 +68,10 @@ def detect(bar: dict, close_t: datetime, bars: list[dict], a: float, daily: list
         elif pos <= 0.3:
             out.append(mk("EIA_REACTION", SHORT, bar["c"], bar["c"] + z, bar["h"] + 0.05 * a, mid, "EIA", mid))
     # ORB_LONDON / ORB_NY: first close beyond the 30-minute opening range, within 2 h after it.
+    ny_h, ny_m = (int(x) for x in orb_ny_start.split(":"))
     for name, hour in SESSIONS:
-        start = t.replace(hour=hour, minute=0, second=0, microsecond=0)
+        hh, mm = (ny_h, ny_m) if name == "ORB_NY" else (hour, 0)
+        start = t.replace(hour=hh, minute=mm, second=0, microsecond=0)
         end = start + timedelta(minutes=30)
         if not (end <= t < end + timedelta(hours=2)):
             continue

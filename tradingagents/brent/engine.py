@@ -761,7 +761,7 @@ class Monitor:
         plan = rules.plan(s, entry, q.spread, self.cfg)
         sig = {
             "id": sig_id, "arm": arm, "telegram": telegram, "instrument": self.cfg.instrument,
-            "rules": families.FAMILIES_VERSION if arm == "family" else RULES_VERSION,
+            "rules": families.version(self.cfg.orb_ny_start) if arm == "family" else RULES_VERSION,
             "config_hash": self.cfg.config_hash(), "setup": s.to_dict(),
             "quote": {"bid": q.bid, "ask": q.ask, "spread": round(q.spread, 4), "time": _iso(q.time),
                       "fetched_at": _iso(q.fetched_at), "rtt": round(q.rtt, 3)},
@@ -842,7 +842,7 @@ class Monitor:
         d = 2 if self.cfg.price_decimals == 3 else self.cfg.price_decimals
         return (f"{s.kind} setup armed {messages.stamp(_dt(s.armed_at))}: zone {s.zone_lo:.{d}f}-{s.zone_hi:.{d}f}, "
                 f"stop {s.stop:.{d}f}; a 15-min close beyond {s.invalid_close:.{d}f} cancels it. Frozen rules "
-                f"{families.FAMILIES_VERSION} (docs/brent-research-families-v1.md); unproven, paper only.")
+                f"{families.version(self.cfg.orb_ny_start)} (docs/brent-research-families-v1.md); unproven, paper only.")
 
     def _count_research_card(self):
         day = rules.ny(self.now()).date().isoformat()
@@ -880,14 +880,14 @@ class Monitor:
                 s["end_reason"] = reason
                 self.store.write("family_end", key=s["key"], status="invalidated", reason=reason)
         for s in families.detect(bar, close_t, bars, a, self.daily, self.cfg.family_arm_hours,
-                                 self.cfg.price_decimals, self.cfg.eia_family):
+                                 self.cfg.price_decimals, self.cfg.eia_family, self.cfg.orb_ny_start):
             if s.key in seen:
                 continue
             seen.append(s.key)
             del seen[:-500]
             fam[s.key] = s.to_dict()
             self.store.write("family_setup", key=s.key, family=s.kind, setup=s.to_dict(),
-                             version=families.FAMILIES_VERSION)
+                             version=families.version(self.cfg.orb_ny_start))
 
     def expire_families(self, now: datetime):
         fam = self.st.setdefault("family_setups", {})
