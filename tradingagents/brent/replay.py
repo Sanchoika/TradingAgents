@@ -254,8 +254,20 @@ def verdict(pr: dict, trades: list[dict]) -> dict:
           and s["mean"] >= rule["mean_at_least"] and a.get("mean", -1) > 0 and b.get("mean", -1) > 0
           and ch.get("range") and ch["range"][0] > 0)
     return {"all": s, "first_half": a, "second_half": b, "vs_random": ch,
-            "by_setup": {k: stats([t["net_r"] for t in trades if t["kind"] == k]) for k in pr["setups"]},
+            "by_setup": {k: {**(x := stats([t["net_r"] for t in trades if t["kind"] == k])), "label": label(x, rule)}
+                         for k in pr["setups"]},
             "passes_filter": bool(ok)}
+
+
+def label(s: dict, rule: dict) -> str:
+    """Per setup: kill (clearly negative), promising (passes the mean and range parts of the rule), else watch."""
+    if s["n"] < 30 or not s.get("range"):
+        return "watch (too few)"
+    if s["range"][1] < 0:
+        return "kill"
+    if s["n"] >= rule["min_trades"] and s["range"][0] > rule["ci_low_above"] and s["mean"] >= rule["mean_at_least"]:
+        return "promising"
+    return "watch"
 
 
 def contamination(pr: dict) -> str:
@@ -282,8 +294,8 @@ def report(pr: dict, reg: dict, v: dict) -> str:
              f"(rule {pr['pass_rule']}, both halves positive, beats the coin-flip direction).", "",
              "Caveats: the likely ranges assume independent trades; trades that overlap in time make them too narrow. "
              "The coin-flip comparison has no financing or currency cost (the setups' R does), so it leans against the setups.", "",
-             "| Setup | Trades | Avg R | Likely range |", "|---|---|---|---|"]
-    lines += [f"| {k} | {x['n']} | {x.get('mean')} | {x.get('range')} |" for k, x in v["by_setup"].items()]
+             "| Setup | Trades | Avg R | Likely range | Verdict |", "|---|---|---|---|---|"]
+    lines += [f"| {k} | {x['n']} | {x.get('mean')} | {x.get('range')} | {x['label']} |" for k, x in v["by_setup"].items()]
     return "\n".join(lines) + "\n"
 
 

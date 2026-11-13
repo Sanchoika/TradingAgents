@@ -62,3 +62,11 @@ def test_verdict_needs_both_halves_and_beating_random():
     t = [{"kind": "BREAKOUT", "net_r": 1.0, "baseline_r": 0.0}] * 10 + [{"kind": "BREAKOUT", "net_r": -0.5, "baseline_r": 0.0}] * 10
     v = replay.verdict(PR, t)
     assert v["first_half"]["mean"] > 0 and v["second_half"]["mean"] < 0 and v["passes_filter"] is False
+
+
+def test_per_setup_verdict_kill_watch_promising():
+    rule = PR["pass_rule"]
+    assert replay.label({"n": 40, "mean": -0.4, "range": [-0.6, -0.2]}, rule) == "kill"
+    assert replay.label({"n": 40, "mean": 0.3, "range": [0.1, 0.5]}, rule) == "promising"
+    assert replay.label({"n": 40, "mean": 0.05, "range": [-0.2, 0.3]}, rule) == "watch"
+    assert replay.label({"n": 5, "mean": 1.0, "range": [0.5, 1.5]}, rule).startswith("watch")
