@@ -140,8 +140,33 @@ def test_research_card_shows_the_score_line_and_a_result_card_follows_only_a_car
     assert line in messages.research_text(sig, "B", "x", mon._card_extra(sig))
     # a restart without the running stats rebuilds them once from the journal (kind unknown: no signal event)
     for i, k in (("SH-1", "ORB_NY"), ("SH-2", "ORB_NY"), ("SH-3", "BREAKOUT"), ("BR-9", "BREAKOUT")):
-        store.write("signal", id=i, arm="combined" if i.startswith("BR") else "chart-only", setup={"kind": k})
+        store.write("signal", id=i, arm="combined" if i.startswith("BR") else "chart-only", setup={"kind": k},
+                    config_hash=mon.cfg.config_hash())
+    store.write("signal", id="SH-OLD", arm="chart-only", setup={"kind": "ORB_NY"}, config_hash="older-rules")
+    store.write("paper_exit", id="SH-OLD", net_r=9.0)              # an older rule set: not mixed in
     store.write("paper_exit", id="BR-9", net_r=5.0)            # a real alert shadows a research signal: not counted
     del mon.st["scores"]
     assert sum(k["n"] for k in mon._scores().values()) == 3
     assert round(sum(k["sum"] for k in mon._scores().values()), 3) == 1.465     # fx_loss_pct 1% each way
+
+
+def test_a_failing_check_moves_behind_the_others_instead_of_blocking_them(tmp_path):
+    mon, client, sender, clock, store = make(tmp_path)
+    mon.tick()
+    now = clock()
+    item = lambda i: {"id": i, "kind": "missed", "start": now.isoformat(), "end": now.isoformat(),   # noqa: E731
+                      "due": now.isoformat(), "direction": "LONG", "setup": "BREAKOUT", "arm": "chart-only",
+                      "stop": 1, "target": 2, "risk": None}
+    mon.st["post_checks"] = [item("BAD"), item("GOOD")]
+    calls = []
+
+    def candles(*_):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("bad request")
+        return []
+    client.candles = candles
+    mon.post_checks(now + timedelta(minutes=5))
+    assert [c["id"] for c in mon.st["post_checks"]] == ["GOOD", "BAD"]
+    mon.post_checks(now + timedelta(minutes=8))
+    assert any(e["event"] == "missed_outcome" and e["id"] == "GOOD" for e in store.events())

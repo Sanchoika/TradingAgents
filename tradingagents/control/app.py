@@ -201,7 +201,7 @@ class ControlApp:
             n = self.issue(user, f"feedback:{m['id']}")
             buttons = "".join(
                 f"<form method=post action=/act style='display:inline'><input type=hidden name=action value=feedback>"
-                f"<input type=hidden name=id value={html.escape(m['id'])}><input type=hidden name=kind "
+                f"<input type=hidden name=id value='{html.escape(m['id'])}'><input type=hidden name=kind "
                 f"value='{html.escape(m['kind'])}'><input type=hidden name=value value={v}>"
                 f"<input type=hidden name=nonce value={n}><button type=submit>{html.escape(label)}</button></form>"
                 for v, label in choices.items())
