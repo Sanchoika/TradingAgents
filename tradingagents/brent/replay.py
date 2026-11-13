@@ -276,13 +276,30 @@ def report(pr: dict, reg: dict, v: dict) -> str:
              f"**History:** {contamination(pr)}", "",
              f"**Result:** {s['n']} trades, average {s.get('mean')} R after costs, likely {s.get('range')}, "
              f"worst losing run {s.get('worst_run')} R; halves {v['first_half'].get('mean')} / "
-             f"{v['second_half'].get('mean')} R; vs random entries {v['vs_random'].get('mean')} R "
+             f"{v['second_half'].get('mean')} R; vs a coin-flip direction at the same minutes {v['vs_random'].get('mean')} R "
              f"(likely {v['vs_random'].get('range')}).", "",
              f"**Filter:** {'PASSES: worth a forward test' if v['passes_filter'] else 'FAILS'} "
-             f"(rule {pr['pass_rule']}, both halves positive, beats random).", "",
+             f"(rule {pr['pass_rule']}, both halves positive, beats the coin-flip direction).", "",
+             "Caveats: the likely ranges assume independent trades; trades that overlap in time make them too narrow. "
+             "The coin-flip comparison has no financing or currency cost (the setups' R does), so it leans against the setups.", "",
              "| Setup | Trades | Avg R | Likely range |", "|---|---|---|---|"]
     lines += [f"| {k} | {x['n']} | {x.get('mean')} | {x.get('range')} |" for k, x in v["by_setup"].items()]
     return "\n".join(lines) + "\n"
+
+
+def provenance(csv: str, cfg: BrentConfig) -> dict:
+    """What the preregistration hash does not cover: the code version, the effective config and the data file."""
+    import dataclasses
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    git = lambda *a: subprocess.run(["git", *a], cwd=root, capture_output=True, text=True).stdout.strip()   # noqa: E731
+    h = hashlib.sha256()
+    with open(csv, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    conf = json.dumps(dataclasses.asdict(cfg), sort_keys=True, default=str)
+    return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "tradingagents")),
+            "config_sha256": hashlib.sha256(conf.encode()).hexdigest()[:16], "csv_sha256": h.hexdigest()[:16]}
 
 
 def run(prereg_path: str, csv: str, out_dir: str, registry: Path = REGISTRY) -> dict:
@@ -297,8 +314,12 @@ def run(prereg_path: str, csv: str, out_dir: str, registry: Path = REGISTRY) -> 
     v = verdict(pr, trades)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / f"{pr['name']}.json").write_text(json.dumps({"prereg": pr, "registered": reg, "verdict": v,
+    prov = provenance(csv, cfg)
+    (out / f"{pr['name']}.json").write_text(json.dumps({"prereg": pr, "registered": reg, "verdict": v, "provenance": prov,
                                                         "contamination": contamination(pr), "trades": trades}, indent=1))
+    with (registry.parent / "replay-runs.jsonl").open("a", encoding="utf-8") as f:   # every run is logged, pass or fail
+        f.write(json.dumps({"name": pr["name"], "hash": reg["hash"], "ran_at": datetime.now(UTC).isoformat(),
+                            "passes_filter": v["passes_filter"], "n": v["all"]["n"], "mean": v["all"].get("mean"), **prov}) + chr(10))
     (out / f"{pr['name']}.md").write_text(report(pr, reg, v), encoding="utf-8")
     return v
 
