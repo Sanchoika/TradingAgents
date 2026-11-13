@@ -928,11 +928,13 @@ class Monitor:
     def _scores(self) -> dict:
         """Measurement only: closed research paper trades (not real alerts, which shadow a research signal)
         per setup kind {n, sum, wins}; rebuilt once from the journal."""
-        sc = self.st.get("scores")
-        if sc is None:
+        sc, h = self.st.get("scores"), self.cfg.config_hash()
+        if sc is None or self.st.get("scores_hash") != h:   # current rules only; a rule change starts afresh
             sc = self.st["scores"] = {}
+            self.st["scores_hash"] = h
             ev = self.store.events()
-            kinds = {e["id"]: e["setup"]["kind"] for e in ev if e["event"] == "signal" and e.get("arm") not in ("combined", "lab")}
+            kinds = {e["id"]: e["setup"]["kind"] for e in ev if e["event"] == "signal"
+                     and e.get("arm") in ("chart-only", "family") and e.get("config_hash") == h}
             for e in ev:
                 if e["event"] == "paper_exit" and e["id"] in kinds:
                     self._score(sc, kinds[e["id"]], e["net_r"])
@@ -1257,7 +1259,7 @@ class Monitor:
         net *= (1 - self.cfg.fx_loss_pct / 100) if net > 0 else (1 + self.cfg.fx_loss_pct / 100)
         pp.update(state="closed", exit=round(px, 4), exit_time=_iso(now), exit_reason=reason,
                   exit_basis=how, gross_r=round(gross / pp["risk"], 3), net_r=round(net / pp["risk"], 3))
-        if sig.get("arm") not in ("combined", "lab"):   # before the write: a rebuild reads the journal
+        if sig.get("arm") in ("chart-only", "family"):   # before the write: a rebuild reads the journal
             self._score(self._scores(), sig["setup"]["kind"], pp["net_r"])
         self.store.write("paper_exit", id=sig["id"], exit=pp["exit"], reason=reason, basis=how,
                          gross_r=pp["gross_r"], net_r=pp["net_r"], mfe_r=round(pp["mfe"], 3),
@@ -1310,7 +1312,7 @@ class Monitor:
             tid = f"LB-{rules.ny(now):%Y%m%d}-{self.st['seq_lab']:03d}"
             twin = {k: v for k, v in sig.items() if k not in ("paper", "marks", "research_call", "family_card")}
             twin.update(id=tid, arm="lab", telegram=False, lab=r["id"], lab_base=r["base"], lab_of=sig["id"],
-                        rules=lab.LAB_VERSION, hold_hours=p["hold_hours"],
+                        rules=lab.LAB_VERSION, hold_hours=p["hold_hours"], config_hash=f"lab-{r['id']}",
                         setup={**s, "stop": round(entry - d * dist, dec)},
                         plan={**sig["plan"], "t1": round(entry + d * dist, dec),
                               "t2": round(entry + d * p["target_r"] * dist, dec)},
@@ -1409,7 +1411,9 @@ class Monitor:
         except Exception as exc:
             self.store.write("post_check_error", id=c["id"], check=c["kind"], error=str(exc)[:200])
             if now - _dt(c["due"]) < timedelta(hours=6):
-                return   # retry on a later tick
+                todo.remove(c)
+                todo.append(c)   # retry later, behind the others: one bad check never blocks the queue
+                return
         todo.remove(c)
 
     def catch_up(self, sig: dict, now: datetime) -> bool:
