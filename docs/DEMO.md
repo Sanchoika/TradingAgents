@@ -142,13 +142,15 @@ python -m tradingagents.demo --config demo.toml run --dry-run   # real analysis,
 python -m tradingagents.demo --config demo.toml run             # real analysis + demo orders
 ```
 
-**Cost:** free with the Gemini free tier or Ollama. With a paid provider, one run is
-roughly 20 to 40 LLM calls, a few cents to about $0.50 with a cheap model.
+**Cost:** the second command is a real (LLM) run. It is free with the Gemini free tier or
+Ollama. **With a paid provider it costs money**: one run is roughly 20 to 40 LLM calls, a
+few cents to about $0.50 with a cheap model. The checks above make no LLM calls.
 
-## Why weekly
+## Why weekly (watchlist mode)
 
-TradingAgents rates a 5-trading-day holding period, and a simulation of these rules on
-2019-2026 prices (scripts in the project files, `tradingagents/sim-2026-11-01/`) found
+This applies to watchlist mode. Earnings mode (test #22) runs every weekday, because it
+rates only that day's reporters. TradingAgents rates a 5-trading-day holding period, and a simulation of these rules on
+2019-2026 prices (scripts kept in the project files, not in this repo) found
 weekly runs beat daily ones whenever the ratings had any skill: fewer trades, less
 spread and financing, and a fifth of the LLM bill. With weekly runs, a trade stopped
 out mid-week stays flat until the next run. The same simulation showed no setting
@@ -156,16 +158,22 @@ turns random ratings into a profit; settings only change how much a real edge is
 
 ## Schedule it
 
-Watchlist mode once a week, earnings mode every weekday (use `/D MON,TUE,WED,THU,FRI`).
-Windows Task Scheduler, Mondays at 16:00 (Georgia time; 07:00 New York in winter, before
-the US open):
+Watchlist mode once a week, earnings mode every weekday.
+
+Test #22 (earnings mode) ran on the PC as `TradingAgentsDemo`, weekdays 08:00 New York,
+with the watchdog at 09:30. Since the cutover on 2026-11-16 it runs on the server
+(`ta-demo.timer`, `ta-watchdog.timer`); see `docs/RUNBOOK-CUTOVER.md`, whose rollback script
+moves it back to the PC.
+
+A watchlist run in Windows Task Scheduler, Mondays at 16:00 (Georgia time; 07:00 New York
+in winter, before the US open). For earnings mode use `/D MON,TUE,WED,THU,FRI`:
 
 ```powershell
 schtasks /Create /TN TradingAgentsDemo /SC WEEKLY /D MON /ST 16:00 ^
   /TR "cmd /c cd /d C:\bbt\TradingAgents && .venv\Scripts\python -m tradingagents.demo --config demo.toml run >> demo.log 2>&1"
 ```
 
-Or on a Linux server with cron: `0 12 * * 1 cd ~/TradingAgents && .venv/bin/python -m tradingagents.demo --config demo.toml run >> demo.log 2>&1` (UTC).
+Or with cron on a Linux server (weekly watchlist; use `1-5` for weekdays): `0 12 * * 1 cd ~/TradingAgents && .venv/bin/python -m tradingagents.demo --config demo.toml run >> demo.log 2>&1` (UTC).
 
 ## Keeping it running
 
@@ -194,14 +202,25 @@ confidence interval for P&L per trade, and `p_random_as_good`: how often the sam
 trades with coin-flip directions did at least as well. An edge needs the confidence
 interval above zero **and** a small `p_random_as_good` after ~150 trades.
 
-`ratings` scores **every** rating, traded or not (Holds and trades skipped by a cap
+`report` also prints a `ratings` section that scores **every** rating, traded or not (Holds and trades skipped by a cap
 included): the stock's move from the next open over the same window a trade holds,
 at mid prices. `directional.hit_rate` is the share of Buy/Overweight/Sell/Underweight
 calls that pointed the right way; `by_rating` should rise from Sell to Buy if the
 ratings carry information. It fills faster than closed trades and costs nothing.
-Trades in one earnings week move together, so read it together with
-`vs_sector_fund`, not as independent coin flips.
+Trades in one earnings week move together, so read it together with the
+`vs_sector_fund` section of `report`, not as independent coin flips.
 
 Known limits: LLM output varies run to run; Yahoo's free data can be late or missing;
 the paper account charges a flat borrow fee on shorts (no hard-to-borrow refusals, no long financing) and counts P&L in each symbol's
 own currency; on OANDA the agents read the tracking ETF, not the CFD.
+
+`report` also shows `decision_v2_shadow`: a second, stricter reading of each rating
+(LONG/SHORT/ABSTAIN with flags) that is journalled as `decision_v2` rows beside the frozen
+test. It never places or changes an order.
+
+## More docs
+
+- `docs/DEMO-AUDIT.md`: audit of the runner and what was fixed.
+- `docs/CONTROL.md`: the phone control page.
+- `docs/RUNBOOK-CUTOVER.md`: moving the stock test between the PC and the server.
+- `docs/DASHBOARD-ACCESS.md` and `docs/HOSTING.md`: dashboard hosting.
